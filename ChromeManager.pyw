@@ -695,6 +695,41 @@ class BrowserDialog(tk.Toplevel):
         ttk.Label(header, text="填写独立浏览器信息，保存后立即同步到管理列表。",
                   style="PanelMuted.TLabel").pack(anchor="w", pady=(4, 0))
 
+        environment_card = tk.Frame(
+            card,
+            bg="#f7f3ee",
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            padx=16,
+            pady=12,
+        )
+        environment_card.pack(fill="x", padx=22, pady=(0, 10))
+        environment_text = tk.Frame(environment_card, bg="#f7f3ee")
+        environment_text.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            environment_text,
+            text="浏览器环境",
+            bg="#f7f3ee",
+            fg=TEXT,
+            font=("Microsoft YaHei UI", 11, "bold"),
+        ).pack(anchor="w")
+        self.environment_summary = tk.Label(
+            environment_text,
+            bg="#f7f3ee",
+            fg=MUTED,
+            justify="left",
+            anchor="w",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        self.environment_summary.pack(anchor="w", pady=(4, 0))
+        ttk.Button(
+            environment_card,
+            text="修改环境配置",
+            style="Primary.TButton",
+            command=self.edit_environment,
+        ).pack(side="right", padx=(12, 0))
+        self.update_environment_summary()
+
         button_bar = ttk.Frame(card, style="Panel.TFrame", padding=(22, 16))
         button_bar.pack(side="bottom", fill="x")
         ttk.Button(button_bar, text="取消", style="Primary.TButton",
@@ -746,10 +781,6 @@ class BrowserDialog(tk.Toplevel):
         self.auto_start = tk.BooleanVar(value=data.get("auto_start", False))
         ttk.Checkbutton(self.form, text="管理器启动时自动打开此浏览器",
                         variable=self.auto_start).pack(anchor="w", pady=(14, 8))
-        ttk.Button(
-            self.form, text="配置浏览器环境", style="Primary.TButton",
-            command=self.edit_environment,
-        ).pack(anchor="w", pady=(4, 8))
         self.bind("<Control-Return>", lambda _: self.save())
         self.bind("<Escape>", lambda _: self.destroy())
         self.after(50, self.focus_force)
@@ -759,6 +790,20 @@ class BrowserDialog(tk.Toplevel):
         self.wait_window(dialog)
         if dialog.result:
             self.environment = dialog.result
+            self.update_environment_summary()
+
+    def update_environment_summary(self):
+        env = normalize_environment(self.environment)
+        user_agent = env["user_agent"] or "跟随 Chrome 默认值"
+        if len(user_agent) > 48:
+            user_agent = user_agent[:45] + "..."
+        self.environment_summary.config(
+            text=(
+                f"{env['language']} · {env['timezone']} · "
+                f"{env['window_width']}×{env['window_height']}\n"
+                f"UA：{user_agent}"
+            )
+        )
 
     def run_proxy_test(self):
         value = self.vars["proxy"].get().strip()
