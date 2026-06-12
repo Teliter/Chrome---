@@ -487,6 +487,22 @@ REGION_PRESETS = {
         "language": "en-SG", "accept_languages": "en-SG,en-US,en",
         "timezone": "Asia/Singapore", "latitude": 1.3521, "longitude": 103.8198,
     },
+    "马来西亚 · 吉隆坡": {
+        "language": "ms-MY", "accept_languages": "ms-MY,ms,en-US,en",
+        "timezone": "Asia/Kuala_Lumpur", "latitude": 3.1390, "longitude": 101.6869,
+    },
+    "越南 · 胡志明市": {
+        "language": "vi-VN", "accept_languages": "vi-VN,vi,en-US,en",
+        "timezone": "Asia/Ho_Chi_Minh", "latitude": 10.8231, "longitude": 106.6297,
+    },
+    "泰国 · 曼谷": {
+        "language": "th-TH", "accept_languages": "th-TH,th,en-US,en",
+        "timezone": "Asia/Bangkok", "latitude": 13.7563, "longitude": 100.5018,
+    },
+    "菲律宾 · 马尼拉": {
+        "language": "en-PH", "accept_languages": "en-PH,en-US,en,fil",
+        "timezone": "Asia/Manila", "latitude": 14.5995, "longitude": 120.9842,
+    },
     "美国 · 纽约": {
         "language": "en-US", "accept_languages": "en-US,en",
         "timezone": "America/New_York", "latitude": 40.7128, "longitude": -74.0060,
@@ -510,34 +526,17 @@ DEVICE_PRESETS = {
         "user_agent": "", "window_width": 1280, "window_height": 800,
         "mobile_mode": False, "touch_mode": False, "device_scale_factor": 1.0,
     },
-    "Windows 桌面 · 1920×1080": {
+    "Windows 桌面 · 笔记本": {
+        "user_agent": "", "window_width": 1366, "window_height": 768,
+        "mobile_mode": False, "touch_mode": False, "device_scale_factor": 1.0,
+    },
+    "Windows 桌面 · 宽屏": {
         "user_agent": "", "window_width": 1440, "window_height": 900,
         "mobile_mode": False, "touch_mode": False, "device_scale_factor": 1.0,
     },
-    "Android 手机 · Pixel 7": {
-        "user_agent": (
-            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36"
-        ),
-        "window_width": 412, "window_height": 915,
-        "mobile_mode": True, "touch_mode": True, "device_scale_factor": 2.625,
-    },
-    "Android 手机 · Samsung S23": {
-        "user_agent": (
-            "Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36"
-        ),
-        "window_width": 360, "window_height": 780,
-        "mobile_mode": True, "touch_mode": True, "device_scale_factor": 3.0,
-    },
-    "iPhone 15 · 移动网页测试": {
-        "user_agent": (
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
-            "Mobile/15E148 Safari/604.1"
-        ),
-        "window_width": 393, "window_height": 852,
-        "mobile_mode": True, "touch_mode": True, "device_scale_factor": 3.0,
+    "Windows 桌面 · 全高清": {
+        "user_agent": "", "window_width": 1600, "window_height": 900,
+        "mobile_mode": False, "touch_mode": False, "device_scale_factor": 1.0,
     },
 }
 
@@ -582,8 +581,34 @@ class EnvironmentDialog(tk.Toplevel):
             ("privacy", "网络与定位"),
             ("advanced", "高级"),
         ):
-            tabs[key] = ttk.Frame(notebook, style="Panel.TFrame", padding=18)
-            notebook.add(tabs[key], text=title)
+            page = ttk.Frame(notebook, style="Panel.TFrame")
+            canvas = tk.Canvas(page, bg=PANEL, highlightthickness=0)
+            scrollbar = ttk.Scrollbar(page, orient="vertical", command=canvas.yview)
+            canvas.configure(yscrollcommand=scrollbar.set)
+            scrollbar.pack(side="right", fill="y")
+            canvas.pack(side="left", fill="both", expand=True)
+            content = ttk.Frame(canvas, style="Panel.TFrame", padding=18)
+            window = canvas.create_window((0, 0), window=content, anchor="nw")
+            content.bind(
+                "<Configure>",
+                lambda _event, current=canvas: current.configure(
+                    scrollregion=current.bbox("all")
+                ),
+            )
+            canvas.bind(
+                "<Configure>",
+                lambda event, current=canvas, item=window: current.itemconfigure(
+                    item, width=event.width
+                ),
+            )
+            canvas.bind(
+                "<MouseWheel>",
+                lambda event, current=canvas: current.yview_scroll(
+                    int(-event.delta / 120), "units"
+                ),
+            )
+            tabs[key] = content
+            notebook.add(page, text=title)
 
         self.vars = {}
         self.choice_maps = {}
@@ -598,17 +623,22 @@ class EnvironmentDialog(tk.Toplevel):
                 side="left", fill="x", expand=True
             )
 
-        def choice(tab, label, key, value, values):
+        def number_input(tab, label, key, value, minimum, maximum, increment=1):
             row = ttk.Frame(tab, style="Panel.TFrame")
             row.pack(fill="x", pady=5)
             ttk.Label(row, text=label, background=PANEL, width=20).pack(side="left")
-            variable = tk.StringVar(value=value)
+            variable = tk.StringVar(value=str(value))
             self.vars[key] = variable
-            ttk.Combobox(
-                row, textvariable=variable, values=values, state="readonly"
+            ttk.Spinbox(
+                row,
+                textvariable=variable,
+                from_=minimum,
+                to=maximum,
+                increment=increment,
+                width=18,
             ).pack(side="left", fill="x", expand=True)
 
-        def friendly_choice(tab, label, key, value, options):
+        def friendly_choice(tab, label, key, value, options, editable=False):
             row = ttk.Frame(tab, style="Panel.TFrame")
             row.pack(fill="x", pady=5)
             ttk.Label(row, text=label, background=PANEL, width=20).pack(side="left")
@@ -618,7 +648,10 @@ class EnvironmentDialog(tk.Toplevel):
             self.vars[key] = display
             self.choice_maps[key] = mapping
             ttk.Combobox(
-                row, textvariable=display, values=tuple(mapping), state="normal"
+                row,
+                textvariable=display,
+                values=tuple(mapping),
+                state="normal" if editable else "readonly",
             ).pack(side="left", fill="x", expand=True)
 
         def check(tab, label, key, value):
@@ -628,7 +661,7 @@ class EnvironmentDialog(tk.Toplevel):
 
         ttk.Label(
             tabs["preset"],
-            text="先选常用模板，程序会自动填写语言、时区、定位、UA 和窗口参数。",
+            text="先选常用模板，程序会自动填写 Windows 桌面环境、语言、时区、定位和窗口参数。",
             style="PanelMuted.TLabel",
             wraplength=650,
         ).pack(anchor="w", pady=(0, 12))
@@ -675,8 +708,8 @@ class EnvironmentDialog(tk.Toplevel):
         ttk.Label(
             tabs["preset"],
             text=(
-                "建议：代理国家、地区模板和时区保持一致。移动设备模板仅用于网页适配测试，"
-                "不会把 Windows Chrome 变成真实手机。"
+                "建议：代理国家、地区模板和时区保持一致。本项目当前只提供 "
+                "Windows 桌面 Chrome 环境，不再生成手机参数。"
             ),
             style="PanelMuted.TLabel",
             wraplength=650,
@@ -692,10 +725,8 @@ class EnvironmentDialog(tk.Toplevel):
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/149.0.0.0 Safari/537.36"
                 )),
-                ("Android Pixel 7", DEVICE_PRESETS["Android 手机 · Pixel 7"]["user_agent"]),
-                ("Android Samsung S23", DEVICE_PRESETS["Android 手机 · Samsung S23"]["user_agent"]),
-                ("iPhone 15 Safari", DEVICE_PRESETS["iPhone 15 · 移动网页测试"]["user_agent"]),
             ),
+            editable=True,
         )
         friendly_choice(
             tabs["basic"], "窗口尺寸", "_window_size",
@@ -704,14 +735,12 @@ class EnvironmentDialog(tk.Toplevel):
                 ("1280 × 800（常用）", "1280x800"),
                 ("1366 × 768（笔记本）", "1366x768"),
                 ("1440 × 900（桌面）", "1440x900"),
+                ("1600 × 900（宽屏）", "1600x900"),
                 ("1920 × 1080（全高清）", "1920x1080"),
-                ("412 × 915（Pixel 7）", "412x915"),
-                ("393 × 852（iPhone 15）", "393x852"),
-                ("360 × 780（Samsung S23）", "360x780"),
             ),
         )
-        entry(tabs["basic"], "窗口 X 坐标", "window_x", env["window_x"])
-        entry(tabs["basic"], "窗口 Y 坐标", "window_y", env["window_y"])
+        number_input(tabs["basic"], "窗口 X 坐标", "window_x", env["window_x"], 0, 5000, 10)
+        number_input(tabs["basic"], "窗口 Y 坐标", "window_y", env["window_y"], 0, 3000, 10)
         friendly_choice(
             tabs["basic"], "浏览器语言", "language", env["language"],
             (
@@ -719,6 +748,7 @@ class EnvironmentDialog(tk.Toplevel):
                 ("繁体中文（台湾）", "zh-TW"), ("英语（美国）", "en-US"),
                 ("英语（英国）", "en-GB"), ("英语（新加坡）", "en-SG"),
                 ("日语（日本）", "ja-JP"), ("印尼语", "id-ID"),
+                ("马来语", "ms-MY"), ("英语（菲律宾）", "en-PH"),
                 ("泰语", "th-TH"), ("越南语", "vi-VN"),
             ),
         )
@@ -731,6 +761,10 @@ class EnvironmentDialog(tk.Toplevel):
                 ("英国英语优先", "en-GB,en-US,en"),
                 ("日语优先", "ja-JP,ja,en-US,en"),
                 ("印尼语优先", "id-ID,id,en-US,en"),
+                ("马来语优先", "ms-MY,ms,en-US,en"),
+                ("越南语优先", "vi-VN,vi,en-US,en"),
+                ("泰语优先", "th-TH,th,en-US,en"),
+                ("菲律宾英语优先", "en-PH,en-US,en,fil"),
             ),
         )
         friendly_choice(
@@ -740,6 +774,10 @@ class EnvironmentDialog(tk.Toplevel):
                 ("中国香港", "Asia/Hong_Kong"), ("中国台湾", "Asia/Taipei"),
                 ("日本 · 东京", "Asia/Tokyo"), ("新加坡", "Asia/Singapore"),
                 ("印度尼西亚 · 雅加达", "Asia/Jakarta"),
+                ("马来西亚 · 吉隆坡", "Asia/Kuala_Lumpur"),
+                ("越南 · 胡志明市", "Asia/Ho_Chi_Minh"),
+                ("泰国 · 曼谷", "Asia/Bangkok"),
+                ("菲律宾 · 马尼拉", "Asia/Manila"),
                 ("美国 · 纽约", "America/New_York"),
                 ("美国 · 芝加哥", "America/Chicago"),
                 ("美国 · 洛杉矶", "America/Los_Angeles"),
@@ -754,15 +792,12 @@ class EnvironmentDialog(tk.Toplevel):
                 ("跟随系统", "system"), ("浅色模式", "light"), ("深色模式", "dark"),
             ),
         )
-        check(tabs["basic"], "移动设备测试模式", "mobile_mode", env["mobile_mode"])
-        check(tabs["basic"], "触摸事件模式", "touch_mode", env["touch_mode"])
         friendly_choice(
             tabs["basic"], "设备缩放比例", "device_scale_factor",
             str(env["device_scale_factor"]),
             (
-                ("100%（桌面推荐）", "1.0"), ("125%", "1.25"),
-                ("150%", "1.5"), ("200%", "2.0"),
-                ("Pixel 7 · 262.5%", "2.625"), ("手机 · 300%", "3.0"),
+                ("100%（推荐）", "1.0"), ("125%（高分屏）", "1.25"),
+                ("150%（高分屏）", "1.5"), ("175%", "1.75"), ("200%", "2.0"),
             ),
         )
 
@@ -811,6 +846,7 @@ class EnvironmentDialog(tk.Toplevel):
                 ("Quad9", "https://dns.quad9.net/dns-query"),
                 ("阿里公共 DNS", "https://dns.alidns.com/dns-query"),
             ),
+            editable=True,
         )
         check(tabs["privacy"], "启用地理位置模拟", "geo_enabled", env["geo_enabled"])
         friendly_choice(
@@ -820,8 +856,14 @@ class EnvironmentDialog(tk.Toplevel):
                 ("大致区域 · 1000 米", "1000"),
             ),
         )
-        entry(tabs["privacy"], "纬度", "latitude", env["latitude"])
-        entry(tabs["privacy"], "经度", "longitude", env["longitude"])
+        number_input(
+            tabs["privacy"], "纬度（-90 到 90）", "latitude",
+            env["latitude"], -90, 90, 0.0001,
+        )
+        number_input(
+            tabs["privacy"], "经度（-180 到 180）", "longitude",
+            env["longitude"], -180, 180, 0.0001,
+        )
         ttk.Label(
             tabs["privacy"],
             text="以下为隐私测试覆盖，不保证绕过检测，并可能造成环境不一致：",
@@ -852,6 +894,7 @@ class EnvironmentDialog(tk.Toplevel):
                 ("NVIDIA", "Google Inc. (NVIDIA)"),
                 ("AMD", "Google Inc. (AMD)"),
             ),
+            editable=True,
         )
         friendly_choice(
             tabs["advanced"], "WebGL 渲染器", "webgl_renderer",
@@ -862,6 +905,7 @@ class EnvironmentDialog(tk.Toplevel):
                 ("NVIDIA GTX 1660", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660, D3D11)"),
                 ("AMD Radeon Graphics", "ANGLE (AMD, AMD Radeon Graphics, D3D11)"),
             ),
+            editable=True,
         )
 
         entry(
@@ -910,30 +954,49 @@ class EnvironmentDialog(tk.Toplevel):
             if key in ("window_width", "window_height"):
                 continue
             self.set_field_value(key, value)
+        self.set_field_value("mobile_mode", False)
+        self.set_field_value("touch_mode", False)
         self.set_field_value(
             "_window_size",
             f"{preset['window_width']}x{preset['window_height']}",
         )
 
     def randomize_environment(self):
-        region_name = random.choice(tuple(REGION_PRESETS))
-        device_name = random.choice(tuple(DEVICE_PRESETS))
+        selected_region = self.region_preset.get()
+        selected_device = self.device_preset.get()
+        region_name = (
+            selected_region
+            if selected_region in REGION_PRESETS
+            else random.choice(tuple(REGION_PRESETS))
+        )
+        device_name = (
+            selected_device
+            if selected_device in DEVICE_PRESETS
+            else random.choice(tuple(DEVICE_PRESETS))
+        )
         self.region_preset.set(region_name)
         self.device_preset.set(device_name)
         self.apply_region_preset()
         self.apply_device_preset()
 
-        device = DEVICE_PRESETS[device_name]
-        mobile = bool(device["mobile_mode"])
+        region = REGION_PRESETS[region_name]
+        self.set_field_value(
+            "latitude",
+            round(float(region["latitude"]) + random.uniform(-0.035, 0.035), 6),
+        )
+        self.set_field_value(
+            "longitude",
+            round(float(region["longitude"]) + random.uniform(-0.035, 0.035), 6),
+        )
         self.set_field_value("window_x", random.choice((40, 80, 120, 160, 220)))
         self.set_field_value("window_y", random.choice((40, 70, 100, 140)))
         self.set_field_value("color_mode", random.choice(("system", "light", "dark")))
         self.set_field_value("accuracy", random.choice(("20", "100", "1000")))
         self.set_field_value("hardware_concurrency", random.choice(
-            ("4", "6", "8") if mobile else ("4", "6", "8", "12", "16")
+            ("4", "6", "8", "12", "16")
         ))
         self.set_field_value("device_memory", random.choice(
-            ("4", "8") if mobile else ("4", "8", "12", "16")
+            ("4", "8", "12", "16")
         ))
         self.set_field_value(
             "webrtc_policy",
@@ -950,7 +1013,8 @@ class EnvironmentDialog(tk.Toplevel):
         )
         messagebox.showinfo(
             "随机环境已生成",
-            f"地区：{region_name}\n设备：{device_name}\n\n"
+            f"地区：{region_name}\n设备：{device_name}（Windows 桌面）\n\n"
+            "已在所选城市附近小范围随机定位坐标和定位精度。\n"
             "请检查代理出口国家是否与该地区一致，再保存配置。",
             parent=self,
         )
@@ -993,6 +1057,14 @@ class EnvironmentDialog(tk.Toplevel):
         if result["hardware_concurrency"] < 1 or result["device_memory"] <= 0:
             messagebox.showerror("硬件参数错误", "CPU 线程和设备内存必须大于 0。")
             return
+        if not -90 <= result["latitude"] <= 90:
+            messagebox.showerror("纬度错误", "纬度必须在 -90 到 90 之间。")
+            return
+        if not -180 <= result["longitude"] <= 180:
+            messagebox.showerror("经度错误", "经度必须在 -180 到 180 之间。")
+            return
+        result["mobile_mode"] = False
+        result["touch_mode"] = False
         self.result = result
         self.destroy()
 
