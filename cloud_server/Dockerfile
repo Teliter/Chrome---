@@ -7,8 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py dashboard.html ./
 ENV CHROME_MANAGER_DB=/data/cloud.db
 ENV CHROME_MANAGER_KEY_FILE=/data/cloud-data.key
+ENV CHROME_MANAGER_ADMIN_PASSWORD_FILE=/data/cloud-admin-password.txt
 
 VOLUME ["/data"]
 EXPOSE 8787
 CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8787"]
-

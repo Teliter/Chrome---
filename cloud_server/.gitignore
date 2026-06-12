@@ -2,4 +2,5 @@ cloud.db
 cloud.db-shm
 cloud.db-wal
 cloud-data.key
+cloud-admin-password.txt
 __pycache__/

@@ -171,7 +171,7 @@ python -m pip install -r requirements.txt
 python -m uvicorn app:app --host 127.0.0.1 --port 8787
 ```
 
-随后在桌面管理器的“云端账号”页面填写：
+随后点击桌面管理器右上角的“云端账号”，填写：
 
 ```text
 http://127.0.0.1:8787
@@ -183,11 +183,21 @@ http://127.0.0.1:8787
 - 程序设置，但不包含本地解锁密码和云端令牌
 - 网站账号库
 
-网页控制台地址：
+普通客户端看不到网页控制台入口。管理员在服务器端使用以下地址管理全部用户：
 
 ```text
 http://127.0.0.1:8787/dashboard
 ```
+
+管理员用户名默认是 `admin`。首次启动会自动生成随机密码并保存到：
+
+```text
+cloud_server/cloud-admin-password.txt
+```
+
+管理员后台可以查看全部普通用户、同步的浏览器列表和网站账号数据，并可禁用、启用、
+重置密码、清空同步数据或删除用户。
+普通用户令牌访问管理员接口会被拒绝。
 
 服务器使用 `scrypt` 保存登录密码哈希，并使用 Fernet 加密完整同步快照。开发模式会在
 `cloud_server/cloud-data.key` 生成数据密钥，该文件和 SQLite 数据库均已被 Git 忽略。
@@ -196,6 +206,7 @@ http://127.0.0.1:8787/dashboard
 
 - 使用 HTTPS 反向代理，例如 Caddy 或 Nginx
 - 设置固定的 `CHROME_MANAGER_DATA_KEY` 环境变量
+- 设置 `CHROME_MANAGER_ADMIN_USERNAME` 和 `CHROME_MANAGER_ADMIN_PASSWORD`
 - 备份数据库和加密密钥；丢失密钥后同步数据无法恢复
 - 限制服务器访问权限，并设置防火墙、登录限速和定期更新
 

@@ -15,7 +15,6 @@ import threading
 import time
 import urllib.request
 import urllib.parse
-import webbrowser
 import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -1564,26 +1563,42 @@ class App:
                   style="PanelMuted.TLabel").pack(anchor="w", pady=(3, 0))
         self.summary = ttk.Label(header, text="", foreground=GREEN,
                                  background=PANEL, font=("Microsoft YaHei UI", 10, "bold"))
-        self.summary.pack(side="right")
+        right = ttk.Frame(header, style="Panel.TFrame")
+        right.pack(side="right")
+        self.summary.pack(in_=right, side="left", padx=(0, 14))
+        self.cloud_account_var = tk.StringVar()
+        ttk.Button(
+            right,
+            textvariable=self.cloud_account_var,
+            command=self.open_cloud_account,
+        ).pack(side="left")
+        self.cloud_dialog = None
+        self.cloud_server_var = tk.StringVar(
+            value=self.settings.get("cloud_server", "http://127.0.0.1:8787")
+        )
+        self.cloud_username_var = tk.StringVar(
+            value=self.settings.get("cloud_username", "")
+        )
+        self.cloud_password_var = tk.StringVar()
+        self.cloud_status_var = tk.StringVar()
+        self.update_cloud_status()
 
         self.notebook = ttk.Notebook(content, style="Hidden.TNotebook")
         self.notebook.pack(fill="both", expand=True, padx=22, pady=18)
         self.main_tab = ttk.Frame(self.notebook)
         self.password_tab = ttk.Frame(self.notebook)
         self.log_tab = ttk.Frame(self.notebook)
-        self.cloud_tab = ttk.Frame(self.notebook)
         self.settings_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.main_tab, text="浏览器管理")
         self.notebook.add(self.password_tab, text="密码管理")
         self.notebook.add(self.log_tab, text="操作日志")
-        self.notebook.add(self.cloud_tab, text="云端账号")
         self.notebook.add(self.settings_tab, text="程序设置")
         self.notebook.bind("<<NotebookTabChanged>>", self.on_page_changed)
 
         self.nav_buttons = []
         nav_items = (
             ("浏览器", 0), ("密码管理", 1),
-            ("操作日志", 2), ("云端账号", 3), ("程序设置", 4),
+            ("操作日志", 2), ("程序设置", 3),
         )
         for text, index in nav_items:
             button = tk.Button(
@@ -1600,7 +1615,6 @@ class App:
         self.build_main()
         self.build_passwords()
         self.build_logs()
-        self.build_cloud()
         self.build_settings()
         self.select_page(0)
 
@@ -2134,9 +2148,27 @@ class App:
                    command=self.clear_logs).pack(side="left", padx=6)
         self.refresh_logs()
 
-    def build_cloud(self):
-        box = ttk.Frame(self.cloud_tab, style="Panel.TFrame", padding=24)
-        box.pack(fill="x")
+    def open_cloud_account(self):
+        if self.cloud_dialog and self.cloud_dialog.winfo_exists():
+            self.cloud_dialog.lift()
+            self.cloud_dialog.focus_force()
+            return
+        dialog = tk.Toplevel(self.root)
+        self.cloud_dialog = dialog
+        dialog.title("云端账号")
+        dialog.geometry("720x430")
+        dialog.minsize(660, 400)
+        dialog.configure(bg=BG)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        if APP_ICON_FILE.exists():
+            try:
+                dialog.iconbitmap(default=str(APP_ICON_FILE))
+            except tk.TclError:
+                pass
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        box = ttk.Frame(dialog, style="Panel.TFrame", padding=24)
+        box.pack(fill="both", expand=True, padx=18, pady=18)
         ttk.Label(
             box,
             text="云端账号与同步",
@@ -2148,13 +2180,6 @@ class App:
             style="PanelMuted.TLabel",
         ).pack(anchor="w", pady=(4, 18))
 
-        self.cloud_server_var = tk.StringVar(
-            value=self.settings.get("cloud_server", "http://127.0.0.1:8787")
-        )
-        self.cloud_username_var = tk.StringVar(
-            value=self.settings.get("cloud_username", "")
-        )
-        self.cloud_password_var = tk.StringVar()
         fields = (
             ("服务器地址", self.cloud_server_var, False),
             ("用户名", self.cloud_username_var, False),
@@ -2185,19 +2210,17 @@ class App:
         ttk.Button(actions, text="拉取同步", command=self.cloud_download).pack(
             side="left", padx=7
         )
-        ttk.Button(actions, text="打开网页控制台", command=self.open_cloud_dashboard).pack(
-            side="left", padx=7
-        )
         ttk.Button(actions, text="退出登录", command=self.cloud_logout).pack(
             side="left", padx=7
         )
-        self.cloud_status_var = tk.StringVar()
         ttk.Label(
             box,
             textvariable=self.cloud_status_var,
             style="PanelMuted.TLabel",
         ).pack(anchor="w", pady=(10, 0))
         self.update_cloud_status()
+        dialog.wait_visibility()
+        dialog.focus_force()
 
     def build_settings(self):
         box = ttk.Frame(self.settings_tab, style="Panel.TFrame", padding=22)
@@ -2233,6 +2256,8 @@ class App:
             text = "尚未登录云端账号。"
         if hasattr(self, "cloud_status_var"):
             self.cloud_status_var.set(text)
+        if hasattr(self, "cloud_account_var"):
+            self.cloud_account_var.set(username if token and username else "云端账号")
 
     def cloud_auth_values(self):
         server = normalize_server_url(self.cloud_server_var.get())
@@ -2407,14 +2432,6 @@ class App:
             lambda: download_snapshot(server, token),
             finished,
         )
-
-    def open_cloud_dashboard(self):
-        try:
-            server = normalize_server_url(self.cloud_server_var.get())
-        except CloudError as error:
-            messagebox.showerror("服务器地址错误", str(error))
-            return
-        webbrowser.open(server + "/dashboard")
 
     def cloud_logout(self):
         server = self.settings.get("cloud_server", "")
