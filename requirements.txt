@@ -1,0 +1,4 @@
+psutil>=7.0
+pystray>=0.19
+pillow>=11.0
+websocket-client>=1.8
