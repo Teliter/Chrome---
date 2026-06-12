@@ -1,0 +1,5 @@
+cloud.db
+cloud.db-shm
+cloud.db-wal
+cloud-data.key
+__pycache__/

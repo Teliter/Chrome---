@@ -1,0 +1,4 @@
+cloud.db*
+cloud-data.key
+__pycache__/
+

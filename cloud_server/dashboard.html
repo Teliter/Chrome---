@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Chrome Manager 云端控制台</title>
+  <style>
+    :root{--bg:#f7f5f1;--card:#fff;--text:#252321;--muted:#77716b;--line:#e7e1da;--brand:#cf775d}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:"Microsoft YaHei UI",system-ui,sans-serif}
+    header{padding:24px 5vw;background:#fff;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+    h1{font-size:22px;margin:0}.wrap{max-width:1200px;margin:28px auto;padding:0 20px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;box-shadow:0 8px 30px #6b55400d}
+    .login{max-width:460px;margin:70px auto}.field{display:grid;gap:7px;margin:15px 0}
+    input{padding:12px;border:1px solid var(--line);border-radius:9px;font-size:15px}
+    button{border:0;border-radius:9px;padding:11px 18px;background:var(--brand);color:#fff;font-weight:700;cursor:pointer}
+    .secondary{background:#eee8e1;color:#4b4540}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:20px}
+    .stat b{font-size:28px;display:block;margin-top:8px}.muted{color:var(--muted)}
+    table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:12px;border-bottom:1px solid var(--line);font-size:14px}
+    th{color:var(--muted)}.section{margin-top:20px}.hidden{display:none}.error{color:#b33b2f;margin-top:12px}
+    @media(max-width:700px){.stats{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<header><h1>Chrome Manager 云端控制台</h1><div id="account" class="muted"></div></header>
+<main class="wrap">
+  <section id="loginCard" class="card login">
+    <h2>登录控制台</h2>
+    <p class="muted">使用桌面管理器注册的云端账号。</p>
+    <div class="field"><label>用户名</label><input id="username" autocomplete="username"></div>
+    <div class="field"><label>密码</label><input id="password" type="password" autocomplete="current-password"></div>
+    <button onclick="authenticate('/api/login')">登录</button>
+    <button class="secondary" onclick="authenticate('/api/register')">注册</button>
+    <div id="loginError" class="error"></div>
+  </section>
+  <section id="dashboard" class="hidden">
+    <div class="stats">
+      <div class="card stat"><span class="muted">浏览器</span><b id="browserCount">0</b></div>
+      <div class="card stat"><span class="muted">网站账号</span><b id="vaultCount">0</b></div>
+      <div class="card stat"><span class="muted">最近同步</span><b id="updatedAt" style="font-size:17px">从未同步</b></div>
+    </div>
+    <div class="card section">
+      <div class="row"><h2 style="flex:1">浏览器列表</h2><button class="secondary" onclick="refresh()">刷新</button><button class="secondary" onclick="logout()">退出</button></div>
+      <div style="overflow:auto"><table><thead><tr><th>名称</th><th>分组</th><th>CDP 端口</th><th>首页</th><th>上次打开</th></tr></thead><tbody id="browsers"></tbody></table></div>
+    </div>
+    <div class="card section">
+      <h2>网站账号</h2>
+      <div style="overflow:auto"><table><thead><tr><th>网站</th><th>网址</th><th>账号</th><th>密码</th><th>所属浏览器</th><th>备注</th></tr></thead><tbody id="vault"></tbody></table></div>
+    </div>
+  </section>
+</main>
+<script>
+let token=sessionStorage.getItem("cloudToken")||"";
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+async function api(path,options={}){
+  options.headers={...(options.headers||{}),"Content-Type":"application/json",Authorization:`Bearer ${token}`};
+  const response=await fetch(path,options);const data=await response.json();
+  if(!response.ok)throw new Error(data.detail||`HTTP ${response.status}`);return data;
+}
+async function authenticate(path){
+  try{
+    const response=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:username.value,password:password.value})});
+    const data=await response.json();if(!response.ok)throw new Error(data.detail);
+    token=data.token;sessionStorage.setItem("cloudToken",token);loginError.textContent="";await refresh();
+  }catch(error){loginError.textContent=error.message}
+}
+async function logout(){
+  try{if(token)await api("/api/logout",{method:"POST"})}catch(_){}
+  token="";sessionStorage.removeItem("cloudToken");dashboard.classList.add("hidden");loginCard.classList.remove("hidden");account.textContent="";
+}
+function reveal(button){
+  const cell=button.closest("td"),secret=cell.dataset.password||"";
+  button.textContent=button.textContent==="显示"?"隐藏":"显示";
+  cell.querySelector("span").textContent=button.textContent==="隐藏"?secret:"••••••";
+}
+async function refresh(){
+  try{
+    const [me,data]=await Promise.all([api("/api/me"),api("/api/sync")]);
+    account.textContent=me.username;browserCount.textContent=me.browser_count;vaultCount.textContent=me.vault_count;
+    updatedAt.textContent=me.updated_at?new Date(me.updated_at).toLocaleString():"从未同步";
+    browsers.innerHTML=Object.values(data.browsers||{}).map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.group)}</td><td>${esc(x.port)}</td><td>${esc(x.home)}</td><td>${esc(x.last_open_at||"")}</td></tr>`).join("");
+    vault.innerHTML=(data.vault||[]).map(x=>`<tr><td>${esc(x.site)}</td><td>${esc(x.url)}</td><td>${esc(x.username)}</td><td data-password="${esc(x.password)}"><span>••••••</span> <button class="secondary" onclick="reveal(this)">显示</button></td><td>${esc(x.browser_key)}</td><td>${esc(x.note)}</td></tr>`).join("");
+    loginCard.classList.add("hidden");dashboard.classList.remove("hidden");
+  }catch(error){logout();loginError.textContent=error.message}
+}
+if(token)refresh();
+</script>
+</body>
+</html>

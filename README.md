@@ -24,6 +24,7 @@
 - 完整导出、导入和恢复单个浏览器
 - 提供 Codex/命令行创建、启动和关闭浏览器的接口
 - 内置明文网站账号管理、CSV 导入导出功能
+- 云端账号注册、登录、加密同步和网页控制台
 
 ## 运行环境
 
@@ -135,6 +136,8 @@ browser_cli.py             Codex 和命令行接口
 environment_config.py      环境模型、启动参数和一致性检查
 environment_controller.py  通过 CDP 向现有及新标签页应用环境设置
 proxy_forwarder.py         带认证 HTTP 代理的本地转发桥
+cloud_client.py            桌面端云同步客户端
+cloud_server/              注册登录 API、SQLite 存储和网页控制台
 requirements.txt           Python 依赖
 profiles/                  独立浏览器用户数据
 backups/                   浏览器备份
@@ -152,6 +155,53 @@ password-vault.json    明文网站账号库
 
 这些用户数据已加入 `.gitignore`，不会默认提交到 Git。
 
+## 云端账号与网页控制台
+
+项目包含一个可独立部署的云端服务。开发测试时进入 `cloud_server`，双击：
+
+```text
+启动云端服务.cmd
+```
+
+或者手动运行：
+
+```powershell
+cd .\cloud_server
+python -m pip install -r requirements.txt
+python -m uvicorn app:app --host 127.0.0.1 --port 8787
+```
+
+随后在桌面管理器的“云端账号”页面填写：
+
+```text
+http://127.0.0.1:8787
+```
+
+注册并登录后，可以上传或拉取：
+
+- 浏览器名称、分组、端口、代理和环境配置
+- 程序设置，但不包含本地解锁密码和云端令牌
+- 网站账号库
+
+网页控制台地址：
+
+```text
+http://127.0.0.1:8787/dashboard
+```
+
+服务器使用 `scrypt` 保存登录密码哈希，并使用 Fernet 加密完整同步快照。开发模式会在
+`cloud_server/cloud-data.key` 生成数据密钥，该文件和 SQLite 数据库均已被 Git 忽略。
+
+公网部署必须：
+
+- 使用 HTTPS 反向代理，例如 Caddy 或 Nginx
+- 设置固定的 `CHROME_MANAGER_DATA_KEY` 环境变量
+- 备份数据库和加密密钥；丢失密钥后同步数据无法恢复
+- 限制服务器访问权限，并设置防火墙、登录限速和定期更新
+
+当前云同步不会上传 `profiles/`、Cookie、浏览器扩展和完整登录状态。这些数据体积大且非常敏感，
+后续应使用独立的压缩、端到端加密、断点续传和配额模块。
+
 ## 数据迁移
 
 完全关闭管理器和所有浏览器后，可以复制整个项目文件夹到另一台 Windows 电脑。请保留 `profiles` 和 `browser-map.json`。
@@ -164,6 +214,7 @@ password-vault.json    明文网站账号库
 
 - CDP 仅绑定 `127.0.0.1`，不要将调试端口开放到公网。
 - 代理账号密码和内置账号库可能以明文保存在本地。
+- 云端网页控制台能显示同步的网站密码，只能通过可信 HTTPS 服务器使用。
 - 不要将包含真实用户数据的 `profiles` 或配置文件上传到公开仓库。
 - 使用代理前应确认代理服务商可信，并遵守网站规则和当地法律。
 

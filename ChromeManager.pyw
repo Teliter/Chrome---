@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.request
 import urllib.parse
+import webbrowser
 import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,15 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import psutil
+from cloud_client import (
+    CloudError,
+    download_snapshot,
+    login as cloud_login_request,
+    logout as cloud_logout_request,
+    normalize_server_url,
+    register as cloud_register_request,
+    upload_snapshot,
+)
 from environment_config import (
     DEFAULT_ENVIRONMENT,
     apply_profile_preferences,
@@ -1561,17 +1571,19 @@ class App:
         self.main_tab = ttk.Frame(self.notebook)
         self.password_tab = ttk.Frame(self.notebook)
         self.log_tab = ttk.Frame(self.notebook)
+        self.cloud_tab = ttk.Frame(self.notebook)
         self.settings_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.main_tab, text="浏览器管理")
         self.notebook.add(self.password_tab, text="密码管理")
         self.notebook.add(self.log_tab, text="操作日志")
+        self.notebook.add(self.cloud_tab, text="云端账号")
         self.notebook.add(self.settings_tab, text="程序设置")
         self.notebook.bind("<<NotebookTabChanged>>", self.on_page_changed)
 
         self.nav_buttons = []
         nav_items = (
             ("浏览器", 0), ("密码管理", 1),
-            ("操作日志", 2), ("程序设置", 3),
+            ("操作日志", 2), ("云端账号", 3), ("程序设置", 4),
         )
         for text, index in nav_items:
             button = tk.Button(
@@ -1588,6 +1600,7 @@ class App:
         self.build_main()
         self.build_passwords()
         self.build_logs()
+        self.build_cloud()
         self.build_settings()
         self.select_page(0)
 
@@ -2121,6 +2134,71 @@ class App:
                    command=self.clear_logs).pack(side="left", padx=6)
         self.refresh_logs()
 
+    def build_cloud(self):
+        box = ttk.Frame(self.cloud_tab, style="Panel.TFrame", padding=24)
+        box.pack(fill="x")
+        ttk.Label(
+            box,
+            text="云端账号与同步",
+            style="Section.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            box,
+            text="同步浏览器配置、程序设置和网站账号。Chrome Profile、Cookie 与扩展不会自动上传。",
+            style="PanelMuted.TLabel",
+        ).pack(anchor="w", pady=(4, 18))
+
+        self.cloud_server_var = tk.StringVar(
+            value=self.settings.get("cloud_server", "http://127.0.0.1:8787")
+        )
+        self.cloud_username_var = tk.StringVar(
+            value=self.settings.get("cloud_username", "")
+        )
+        self.cloud_password_var = tk.StringVar()
+        fields = (
+            ("服务器地址", self.cloud_server_var, False),
+            ("用户名", self.cloud_username_var, False),
+            ("密码", self.cloud_password_var, True),
+        )
+        for label, variable, secret in fields:
+            row = ttk.Frame(box, style="Panel.TFrame")
+            row.pack(fill="x", pady=6)
+            ttk.Label(row, text=label, width=12, background=PANEL).pack(side="left")
+            ttk.Entry(
+                row,
+                textvariable=variable,
+                show="*" if secret else "",
+                width=62,
+            ).pack(side="left", fill="x", expand=True)
+
+        actions = ttk.Frame(box, style="Panel.TFrame")
+        actions.pack(fill="x", pady=(16, 8))
+        ttk.Button(actions, text="注册账号", command=self.cloud_register).pack(
+            side="left"
+        )
+        ttk.Button(actions, text="登录", command=self.cloud_login).pack(
+            side="left", padx=7
+        )
+        ttk.Button(actions, text="上传同步", command=self.cloud_upload).pack(
+            side="left", padx=7
+        )
+        ttk.Button(actions, text="拉取同步", command=self.cloud_download).pack(
+            side="left", padx=7
+        )
+        ttk.Button(actions, text="打开网页控制台", command=self.open_cloud_dashboard).pack(
+            side="left", padx=7
+        )
+        ttk.Button(actions, text="退出登录", command=self.cloud_logout).pack(
+            side="left", padx=7
+        )
+        self.cloud_status_var = tk.StringVar()
+        ttk.Label(
+            box,
+            textvariable=self.cloud_status_var,
+            style="PanelMuted.TLabel",
+        ).pack(anchor="w", pady=(10, 0))
+        self.update_cloud_status()
+
     def build_settings(self):
         box = ttk.Frame(self.settings_tab, style="Panel.TFrame", padding=22)
         box.pack(fill="x")
@@ -2143,6 +2221,219 @@ class App:
         ttk.Button(row, text="检查 Chrome 版本", command=self.chrome_version).pack(side="left", padx=6)
         ttk.Label(box, text=f"版本：{APP_VERSION}\n数据目录：{ROOT}",
                   style="PanelMuted.TLabel").pack(anchor="w", pady=12)
+
+    def update_cloud_status(self, message=""):
+        username = self.settings.get("cloud_username", "")
+        token = self.settings.get("cloud_token", "")
+        if message:
+            text = message
+        elif token and username:
+            text = f"已登录：{username}"
+        else:
+            text = "尚未登录云端账号。"
+        if hasattr(self, "cloud_status_var"):
+            self.cloud_status_var.set(text)
+
+    def cloud_auth_values(self):
+        server = normalize_server_url(self.cloud_server_var.get())
+        username = self.cloud_username_var.get().strip()
+        password = self.cloud_password_var.get()
+        if len(username) < 3:
+            raise CloudError("用户名至少需要 3 个字符。")
+        if len(password) < 8:
+            raise CloudError("密码至少需要 8 个字符。")
+        return server, username, password
+
+    def run_cloud_task(self, status, worker, success):
+        self.update_cloud_status(status)
+
+        def run():
+            try:
+                result = worker()
+            except Exception as error:
+                error_message = str(error)
+                self.root.after(
+                    0,
+                    lambda message=error_message: (
+                        self.update_cloud_status(f"失败：{message}"),
+                        messagebox.showerror("云端操作失败", message),
+                    ),
+                )
+                return
+            self.root.after(0, lambda: success(result))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def finish_cloud_auth(self, result, server):
+        self.settings["cloud_server"] = server
+        self.settings["cloud_username"] = result["username"]
+        self.settings["cloud_token"] = result["token"]
+        self.cloud_username_var.set(result["username"])
+        self.cloud_password_var.set("")
+        self.save_settings()
+        self.update_cloud_status(f"已登录：{result['username']}")
+        messagebox.showinfo("登录成功", "云端账号已连接。")
+
+    def cloud_register(self):
+        try:
+            server, username, password = self.cloud_auth_values()
+        except CloudError as error:
+            messagebox.showerror("注册信息错误", str(error))
+            return
+        self.run_cloud_task(
+            "正在注册...",
+            lambda: cloud_register_request(server, username, password),
+            lambda result: self.finish_cloud_auth(result, server),
+        )
+
+    def cloud_login(self):
+        try:
+            server, username, password = self.cloud_auth_values()
+        except CloudError as error:
+            messagebox.showerror("登录信息错误", str(error))
+            return
+        self.run_cloud_task(
+            "正在登录...",
+            lambda: cloud_login_request(server, username, password),
+            lambda result: self.finish_cloud_auth(result, server),
+        )
+
+    def cloud_connection(self):
+        server = normalize_server_url(
+            self.cloud_server_var.get()
+            or self.settings.get("cloud_server", "")
+        )
+        token = self.settings.get("cloud_token", "")
+        if not token:
+            raise CloudError("请先注册或登录云端账号。")
+        return server, token
+
+    def syncable_settings(self):
+        excluded = {"password_hash", "cloud_server", "cloud_username", "cloud_token"}
+        return {
+            key: value for key, value in self.settings.items() if key not in excluded
+        }
+
+    def cloud_upload(self):
+        try:
+            server, token = self.cloud_connection()
+        except CloudError as error:
+            messagebox.showerror("无法同步", str(error))
+            return
+        browsers = json.loads(json.dumps(self.map, ensure_ascii=False))
+        settings = json.loads(json.dumps(self.syncable_settings(), ensure_ascii=False))
+        vault = json.loads(json.dumps(self.vault, ensure_ascii=False))
+
+        def finished(result):
+            self.settings["cloud_server"] = server
+            self.save_settings()
+            self.update_cloud_status(
+                f"上传完成：{result['browser_count']} 个浏览器，"
+                f"{result['vault_count']} 条网站账号；{result['updated_at']}"
+            )
+            messagebox.showinfo("同步完成", "本地数据已加密上传到服务器。")
+
+        self.run_cloud_task(
+            "正在上传同步数据...",
+            lambda: upload_snapshot(server, token, browsers, settings, vault),
+            finished,
+        )
+
+    def validate_cloud_snapshot(self, result):
+        browsers = result.get("browsers", {})
+        settings = result.get("settings", {})
+        vault = result.get("vault", [])
+        if not isinstance(browsers, dict) or not isinstance(settings, dict) or not isinstance(vault, list):
+            raise CloudError("云端数据格式无效。")
+        used_ports = set()
+        for record in browsers.values():
+            if not isinstance(record, dict):
+                raise CloudError("云端浏览器记录格式无效。")
+            try:
+                port = int(record["port"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise CloudError("云端浏览器包含无效端口。") from error
+            if not 1024 <= port <= MAX_CDP_PORT or port in used_ports:
+                raise CloudError(f"云端浏览器端口无效或重复：{port}")
+            used_ports.add(port)
+            record["port"] = port
+            record["environment"] = normalize_environment(record.get("environment"))
+            safe_profile_path(record)
+        return browsers, settings, vault
+
+    def cloud_download(self):
+        if any(port_open(record["port"]) for record in self.map.values()):
+            messagebox.showwarning("请先关闭", "拉取云端数据前，请关闭所有独立浏览器。")
+            return
+        if not messagebox.askyesno(
+            "确认拉取",
+            "拉取会用云端浏览器列表、设置和账号库覆盖本地对应数据。\n"
+            "Chrome Profile 不会被删除或下载，是否继续？",
+        ):
+            return
+        try:
+            server, token = self.cloud_connection()
+        except CloudError as error:
+            messagebox.showerror("无法同步", str(error))
+            return
+
+        def finished(result):
+            try:
+                browsers, settings, vault = self.validate_cloud_snapshot(result)
+            except CloudError as error:
+                self.update_cloud_status(f"失败：{error}")
+                messagebox.showerror("云端数据错误", str(error))
+                return
+            preserved = {
+                key: self.settings.get(key, "")
+                for key in ("password_hash", "cloud_server", "cloud_username", "cloud_token")
+            }
+            self.map = browsers
+            self.settings.update(settings)
+            self.settings.update(preserved)
+            self.vault = vault
+            for record in self.map.values():
+                self.profile_path(record).mkdir(parents=True, exist_ok=True)
+            self.save_map()
+            self.save_settings()
+            save_vault(self.vault)
+            self.refresh()
+            self.refresh_vault()
+            self.update_cloud_status(f"拉取完成：{result.get('updated_at') or '云端暂无时间'}")
+            messagebox.showinfo("同步完成", "云端数据已保存到本机。")
+
+        self.run_cloud_task(
+            "正在拉取云端数据...",
+            lambda: download_snapshot(server, token),
+            finished,
+        )
+
+    def open_cloud_dashboard(self):
+        try:
+            server = normalize_server_url(self.cloud_server_var.get())
+        except CloudError as error:
+            messagebox.showerror("服务器地址错误", str(error))
+            return
+        webbrowser.open(server + "/dashboard")
+
+    def cloud_logout(self):
+        server = self.settings.get("cloud_server", "")
+        token = self.settings.get("cloud_token", "")
+        self.settings["cloud_token"] = ""
+        self.cloud_password_var.set("")
+        self.save_settings()
+        self.update_cloud_status()
+        if server and token:
+            threading.Thread(
+                target=lambda: self._revoke_cloud_session(server, token),
+                daemon=True,
+            ).start()
+
+    def _revoke_cloud_session(self, server, token):
+        try:
+            cloud_logout_request(server, token)
+        except CloudError:
+            pass
 
     def selected(self, single=False):
         keys = list(self.tree.selection())
