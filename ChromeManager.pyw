@@ -2150,6 +2150,34 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
         report = self.environment_report_html(record)
         self.start_browser(record, report.as_uri())
 
+    def edit_selected_environment(self):
+        keys = self.selected(single=True)
+        if not keys:
+            return
+        key = keys[0]
+        record = self.map[key]
+        before = normalize_environment(record.get("environment"))
+        dialog = EnvironmentDialog(self.root, before)
+        self.root.wait_window(dialog)
+        if not dialog.result or dialog.result == before:
+            return
+        record["environment"] = dialog.result
+        self.save_map()
+        log(f"修改浏览器环境：{record['name']}")
+        self.refresh()
+        if port_open(record["port"]):
+            messagebox.showwarning(
+                "需要重启浏览器",
+                "环境配置已经保存。\n\n"
+                "当前浏览器正在运行，窗口、代理、权限、DNS、扩展等部分配置"
+                "需要关闭并重新启动后才会完整生效。",
+            )
+        else:
+            messagebox.showinfo(
+                "保存成功",
+                "环境配置已经保存，下次启动该浏览器时生效。",
+            )
+
     def check_environment(self):
         keys = self.selected(single=True)
         if not keys:
@@ -2184,6 +2212,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
 
     def more_menu(self):
         menu = tk.Menu(self.root, tearoff=0, bg=CARD, fg=TEXT)
+        menu.add_command(label="修改环境配置", command=self.edit_selected_environment)
         menu.add_command(label="查看当前环境信息", command=self.view_environment)
         menu.add_command(label="环境一致性检查", command=self.check_environment)
         menu.add_separator()
