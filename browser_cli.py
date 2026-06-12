@@ -17,13 +17,23 @@ from environment_config import (
     ensure_environment_controller,
     extension_paths,
     normalize_environment,
+    prepare_autofill_extension,
 )
 
 
-ROOT = Path(__file__).resolve().parent
+FROZEN = bool(getattr(sys, "frozen", False))
+RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+ROOT = (
+    Path(os.environ.get("LOCALAPPDATA", Path.home()))
+    / "ChromeMultiManager"
+    if FROZEN
+    else Path(__file__).resolve().parent
+)
 MAP_FILE = ROOT / "browser-map.json"
+VAULT_FILE = ROOT / "password-vault.json"
 PROFILES = ROOT / "profiles"
 MAX_CDP_PORT = 25535
+PROFILES.mkdir(parents=True, exist_ok=True)
 
 
 def load_map():
@@ -156,11 +166,27 @@ def ensure_proxy_bridge(profile, cdp_port, proxy):
         encoding="utf-8",
     )
     if not port_open(listen_port):
+        if FROZEN:
+            manager = Path(sys.executable).parent.parent / "ChromeManager.exe"
+            command = [
+                str(manager),
+                "--proxy-forwarder",
+                "--listen",
+                str(listen_port),
+                "--config",
+                str(config_path),
+            ]
+        else:
+            command = [
+                sys.executable,
+                str(RESOURCE_ROOT / "proxy_forwarder.py"),
+                "--listen",
+                str(listen_port),
+                "--config",
+                str(config_path),
+            ]
         subprocess.Popen(
-            [
-                sys.executable, str(ROOT / "proxy_forwarder.py"),
-                "--listen", str(listen_port), "--config", str(config_path),
-            ],
+            command,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         deadline = time.time() + 5
@@ -247,7 +273,7 @@ def command_add(data, args):
 
 
 def command_start(data, args):
-    _, record = find_record(data, args.browser)
+    key, record = find_record(data, args.browser)
     chrome = find_chrome()
     if not chrome:
         raise SystemExit("未找到 Google Chrome")
@@ -266,6 +292,14 @@ def command_start(data, args):
     ]
     command.extend(build_chrome_arguments(environment))
     extensions = extension_paths(profile, environment)
+    vault = (
+        json.loads(VAULT_FILE.read_text(encoding="utf-8-sig"))
+        if VAULT_FILE.exists()
+        else []
+    )
+    autofill = prepare_autofill_extension(profile, key, vault)
+    if autofill:
+        extensions.append(autofill)
     if extensions:
         extension_value = ",".join(str(path) for path in extensions)
         command.append(f"--load-extension={extension_value}")
@@ -285,7 +319,7 @@ def command_start(data, args):
         time.sleep(0.08)
     if cdp_alive(record["port"]):
         ensure_environment_controller(
-            ROOT, profile, record["port"], environment
+            RESOURCE_ROOT, profile, record["port"], environment
         )
         record["last_open_at"] = datetime.now().isoformat(timespec="seconds")
         save_map(data)
@@ -319,7 +353,7 @@ def command_stop(data, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Chrome 多开管理器 Codex/CLI 工具")
+    parser = argparse.ArgumentParser(description="Chrome 多开管理器命令行工具")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("list", help="列出全部浏览器")
 

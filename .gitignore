@@ -20,3 +20,7 @@ launchers/*
 .restore-old-*/
 .import-*/
 *.zip
+build/
+dist/
+release/
+*.spec.bak

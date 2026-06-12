@@ -11,15 +11,15 @@
 源码文件：
 
 - ChromeManager.pyw：主程序源码
-- browser_cli.py：供 Codex 或命令行新增、列出、启动和关闭浏览器
+- browser_cli.py：供命令行或自动化工具新增、列出、启动和关闭浏览器
 - environment_config.py：浏览器环境配置、启动参数和一致性规则
 - environment_controller.py：通过本地 CDP 将环境设置应用到现有和新标签页
 - proxy_forwarder.py：为带账号密码的 HTTP 代理提供本地认证桥
 - requirements.txt：开发依赖
 
-Codex 协作：
+自动化工具协作：
 
-Codex 新增浏览器时，应在本目录运行：
+通过命令行新增浏览器时，应在本目录运行：
 
 python browser_cli.py add --name "店铺A"
 
@@ -37,7 +37,7 @@ python browser_cli.py start 9231
 
 python browser_cli.py stop 9231
 
-程序启动的浏览器带固定 CDP 端口，因此 Codex、Playwright 或 agent-browser 都能连接操作。
+程序启动的浏览器带固定 CDP 端口，因此 Playwright、agent-browser 或其他 CDP 客户端都能连接操作。
 
 功能：
 
@@ -51,7 +51,7 @@ python browser_cli.py stop 9231
 - 关闭选中：关闭当前选中的浏览器
 - 打开网页：在选中浏览器中打开网址
 - 运行监控：显示 PID、标签页数量和内存占用
-- Codex 指令：自动生成并复制指定端口的操作指令
+- 操作指令：自动生成并复制指定端口的连接与操作指令
 - 浏览器环境：UA、窗口、语言、时区、定位、权限、下载目录、颜色模式、移动/触摸模式和独立扩展
 - 网络隐私：独立代理、安全 DNS、WebRTC 限制和代理出口检测
 - 隐私测试覆盖：Canvas、WebGL、CPU、内存和字体的页面级测试覆盖
@@ -75,7 +75,7 @@ python browser_cli.py stop 9231
 - browser-map.json：名称、端口和 profile 映射
 - manager-settings.json：托盘、管理器密码等程序设置
 
-向 Codex 下达任务示例：
+向自动化工具下达任务示例：
 
 连接 9231 的店铺A浏览器，打开 EasyBoss 查询订单。只操作 9231，完成后不要关闭浏览器。
 

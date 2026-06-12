@@ -39,6 +39,7 @@ from environment_config import (
     ensure_environment_controller,
     extension_paths,
     normalize_environment,
+    prepare_autofill_extension,
 )
 try:
     import pystray
@@ -50,8 +51,15 @@ except ImportError:
     ImageTk = None
 
 
-APP_VERSION = "3.0.0-dev"
-ROOT = Path(__file__).resolve().parent
+APP_VERSION = "3.1.0"
+FROZEN = bool(getattr(sys, "frozen", False))
+RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+ROOT = (
+    Path(os.environ.get("LOCALAPPDATA", Path.home()))
+    / "ChromeMultiManager"
+    if FROZEN
+    else Path(__file__).resolve().parent
+)
 MAP_FILE = ROOT / "browser-map.json"
 SETTINGS_FILE = ROOT / "manager-settings.json"
 PROFILES = ROOT / "profiles"
@@ -60,7 +68,7 @@ BACKUPS = ROOT / "backups"
 LOG_FILE = ROOT / "manager.log"
 VAULT_FILE = ROOT / "password-vault.json"
 LEGACY_VAULT_FILE = ROOT / "password-vault.dat"
-APP_ICON_FILE = ROOT / "chrome-manager.ico"
+APP_ICON_FILE = RESOURCE_ROOT / "chrome-manager.ico"
 LOCK_PORT = 39231
 MAX_CDP_PORT = 25535
 
@@ -76,9 +84,61 @@ PURPLE = "#7a6f9b"
 BORDER = "#e5e1da"
 SIDEBAR = "#f0eee8"
 HOVER = "#ebe7df"
+_DIALOG_ROOT = None
 
 for folder in (PROFILES, LAUNCHERS, BACKUPS):
     folder.mkdir(parents=True, exist_ok=True)
+
+
+def center_window(window, parent=None):
+    window.update_idletasks()
+    width = max(window.winfo_width(), window.winfo_reqwidth())
+    height = max(window.winfo_height(), window.winfo_reqheight())
+    anchor = parent if parent and parent.winfo_exists() else None
+    if anchor and anchor.winfo_viewable():
+        x = anchor.winfo_rootx() + (anchor.winfo_width() - width) // 2
+        y = anchor.winfo_rooty() + (anchor.winfo_height() - height) // 2
+    else:
+        x = (window.winfo_screenwidth() - width) // 2
+        y = (window.winfo_screenheight() - height) // 2
+    x = max(0, min(x, window.winfo_screenwidth() - width))
+    y = max(0, min(y, window.winfo_screenheight() - height))
+    window.geometry(f"+{x}+{y}")
+
+
+def configure_dialog_parent(root):
+    global _DIALOG_ROOT
+    _DIALOG_ROOT = root
+    for module, names in (
+        (
+            messagebox,
+            (
+                "showinfo", "showwarning", "showerror",
+                "askquestion", "askokcancel", "askyesno",
+                "askyesnocancel", "askretrycancel",
+            ),
+        ),
+        (simpledialog, ("askstring", "askinteger", "askfloat")),
+        (
+            filedialog,
+            (
+                "askopenfilename", "askopenfilenames", "asksaveasfilename",
+                "askdirectory",
+            ),
+        ),
+    ):
+        for name in names:
+            original = getattr(module, name)
+            if getattr(original, "_chrome_manager_wrapped", False):
+                continue
+
+            def wrapped(*args, _original=original, **kwargs):
+                if "parent" not in kwargs and _DIALOG_ROOT:
+                    kwargs["parent"] = _DIALOG_ROOT
+                return _original(*args, **kwargs)
+
+            wrapped._chrome_manager_wrapped = True
+            setattr(module, name, wrapped)
 
 
 def load_json(path, default):
@@ -213,7 +273,7 @@ def ensure_app_icon():
 def set_windows_app_id():
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "Codex.ChromeMultiManager.2"
+            "ChromeMultiManager.Desktop.3"
         )
     except Exception:
         pass
@@ -319,11 +379,26 @@ def ensure_proxy_bridge(profile, cdp_port, proxy):
         "password": proxy["password"],
     })
     if not port_open(listen_port):
+        if FROZEN:
+            command = [
+                sys.executable,
+                "--proxy-forwarder",
+                "--listen",
+                str(listen_port),
+                "--config",
+                str(config_path),
+            ]
+        else:
+            command = [
+                sys.executable,
+                str(RESOURCE_ROOT / "proxy_forwarder.py"),
+                "--listen",
+                str(listen_port),
+                "--config",
+                str(config_path),
+            ]
         subprocess.Popen(
-            [
-                sys.executable, str(ROOT / "proxy_forwarder.py"),
-                "--listen", str(listen_port), "--config", str(config_path),
-            ],
+            command,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         deadline = time.time() + 5
@@ -343,13 +418,18 @@ def port_open(port):
 
 
 def port_pid(port):
+    return listener_pid_map().get(int(port))
+
+
+def listener_pid_map():
+    listeners = {}
     try:
         for conn in psutil.net_connections(kind="tcp"):
-            if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == int(port):
-                return conn.pid
+            if conn.status == psutil.CONN_LISTEN and conn.laddr:
+                listeners[int(conn.laddr.port)] = conn.pid
     except Exception:
         pass
-    return None
+    return listeners
 
 
 def stop_port_listener(port):
@@ -377,8 +457,8 @@ def cdp_alive(port):
         return False
 
 
-def browser_stats(port):
-    pid = port_pid(port)
+def browser_stats(port, pid=None):
+    pid = pid or port_pid(port)
     if not pid:
         return None, 0, 0
     memory = 0
@@ -410,6 +490,47 @@ def close_windows(pid):
         return True
 
     user32.EnumWindows(callback, 0)
+
+
+def win_file_version(path):
+    version = ctypes.windll.version
+    size = version.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        raise ctypes.WinError()
+    buffer = ctypes.create_string_buffer(size)
+    if not version.GetFileVersionInfoW(str(path), 0, size, buffer):
+        raise ctypes.WinError()
+    pointer = ctypes.c_void_p()
+    length = ctypes.wintypes.UINT()
+    if not version.VerQueryValueW(
+        buffer, "\\", ctypes.byref(pointer), ctypes.byref(length)
+    ):
+        raise ctypes.WinError()
+
+    class FixedFileInfo(ctypes.Structure):
+        _fields_ = [
+            ("signature", ctypes.wintypes.DWORD),
+            ("struct_version", ctypes.wintypes.DWORD),
+            ("file_version_ms", ctypes.wintypes.DWORD),
+            ("file_version_ls", ctypes.wintypes.DWORD),
+            ("product_version_ms", ctypes.wintypes.DWORD),
+            ("product_version_ls", ctypes.wintypes.DWORD),
+            ("file_flags_mask", ctypes.wintypes.DWORD),
+            ("file_flags", ctypes.wintypes.DWORD),
+            ("file_os", ctypes.wintypes.DWORD),
+            ("file_type", ctypes.wintypes.DWORD),
+            ("file_subtype", ctypes.wintypes.DWORD),
+            ("file_date_ms", ctypes.wintypes.DWORD),
+            ("file_date_ls", ctypes.wintypes.DWORD),
+        ]
+
+    info = ctypes.cast(pointer, ctypes.POINTER(FixedFileInfo)).contents
+    return (
+        info.file_version_ms >> 16,
+        info.file_version_ms & 0xFFFF,
+        info.file_version_ls >> 16,
+        info.file_version_ls & 0xFFFF,
+    )
 
 
 def safe_extract_profile(archive, destination):
@@ -568,6 +689,7 @@ class EnvironmentDialog(tk.Toplevel):
         self.grab_set()
         self.geometry("780x720")
         self.minsize(700, 600)
+        self.after_idle(lambda: center_window(self, parent))
         env = normalize_environment(environment)
 
         shell = tk.Frame(self, bg=BG, padx=16, pady=16)
@@ -1099,6 +1221,7 @@ class BrowserDialog(tk.Toplevel):
         height = min(680, max(500, screen_h - 100))
         self.geometry(f"570x{height}")
         self.minsize(500, 480)
+        self.after_idle(lambda: center_window(self, parent))
 
         data = record or {}
         self.environment = normalize_environment(data.get("environment"))
@@ -1186,10 +1309,11 @@ class BrowserDialog(tk.Toplevel):
             if key == "proxy":
                 proxy_row = ttk.Frame(self.form, style="Panel.TFrame")
                 proxy_row.pack(fill="x", pady=(7, 2))
-                ttk.Button(
+                self.proxy_test_button = ttk.Button(
                     proxy_row, text="测试代理", style="Primary.TButton",
                     command=self.run_proxy_test,
-                ).pack(side="left")
+                )
+                self.proxy_test_button.pack(side="left")
                 self.proxy_result = ttk.Label(
                     proxy_row, text="支持 http://用户:密码@IP:端口",
                     style="PanelMuted.TLabel",
@@ -1224,10 +1348,35 @@ class BrowserDialog(tk.Toplevel):
 
     def run_proxy_test(self):
         value = self.vars["proxy"].get().strip()
+        if not value:
+            messagebox.showerror("代理测试失败", "请先填写代理服务器。", parent=self)
+            return
         self.proxy_result.config(text="正在检测...")
-        self.update_idletasks()
+        self.proxy_test_button.configure(state="disabled")
+
+        def worker():
+            try:
+                result = test_proxy(value)
+            except ValueError as error:
+                message = str(error)
+                self.after(
+                    0,
+                    lambda: self.finish_proxy_test(error_message=message),
+                )
+                return
+            self.after(0, lambda: self.finish_proxy_test(result=result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_proxy_test(self, result=None, error_message=""):
+        if not self.winfo_exists():
+            return
+        self.proxy_test_button.configure(state="normal")
+        if error_message:
+            self.proxy_result.config(text="测试失败", foreground=RED)
+            messagebox.showerror("代理测试失败", error_message, parent=self)
+            return
         try:
-            result = test_proxy(value)
             location = " / ".join(
                 item for item in (
                     result["country"], result["region"], result["city"]
@@ -1249,7 +1398,7 @@ class BrowserDialog(tk.Toplevel):
                 f"Google：{'可以访问' if result['google'] else '无法访问'}",
                 parent=self,
             )
-        except ValueError as error:
+        except Exception as error:
             self.proxy_result.config(text="测试失败", foreground=RED)
             messagebox.showerror("代理测试失败", str(error), parent=self)
 
@@ -1305,6 +1454,7 @@ class VaultDialog(tk.Toplevel):
         height = min(680, max(500, screen_h - 120))
         self.geometry(f"580x{height}")
         self.minsize(520, 480)
+        self.after_idle(lambda: center_window(self, parent))
 
         data = record or {}
         shell = tk.Frame(self, bg=BG, padx=18, pady=18)
@@ -1559,7 +1709,7 @@ class App:
         left = ttk.Frame(header, style="Panel.TFrame")
         left.pack(side="left")
         ttk.Label(left, text="独立浏览器", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(left, text="管理本地独立 Chrome 环境，并允许 Codex 通过 CDP 精准控制",
+        ttk.Label(left, text="管理本地独立 Chrome 环境，并允许自动化工具通过 CDP 精准控制",
                   style="PanelMuted.TLabel").pack(anchor="w", pady=(3, 0))
         self.summary = ttk.Label(header, text="", foreground=GREEN,
                                  background=PANEL, font=("Microsoft YaHei UI", 10, "bold"))
@@ -1616,6 +1766,7 @@ class App:
         self.build_passwords()
         self.build_logs()
         self.build_settings()
+        self.update_access_controls()
         self.select_page(0)
 
     def select_page(self, index):
@@ -1664,8 +1815,11 @@ class App:
 
         toolbar = ttk.Frame(self.main_tab)
         toolbar.pack(fill="x", pady=(0, 12))
-        ttk.Button(toolbar, text="＋ 新建浏览器", command=self.create,
-                   style="Primary.TButton").pack(side="left", padx=(0, 8))
+        self.create_browser_button = ttk.Button(
+            toolbar, text="＋ 新建浏览器", command=self.create,
+            style="Primary.TButton",
+        )
+        self.create_browser_button.pack(side="left", padx=(0, 8))
         ttk.Button(toolbar, text="关闭选中", command=self.stop_selected,
                    style="Danger.TButton").pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="更多操作", command=self.more_menu).pack(side="left")
@@ -1793,15 +1947,20 @@ class App:
         info.pack(fill="x", pady=(0, 12))
         tk.Label(
             info,
-            text="注意：账号与密码以明文保存在 password-vault.json。"
-                 "请勿把程序文件夹或导出的 CSV 发给其他人。"
-                 "本程序不会自动读取或解密 Chrome 已保存密码。",
+            text="注意：账号与密码以明文保存在本机账号库。"
+                 "分配所属浏览器后，可在完全匹配的网站域名自动填写，但不会自动提交。"
+                 "请勿把用户数据或导出的 CSV 发给其他人。",
             bg="#f1ede5", fg=TEXT, anchor="w",
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(fill="x")
 
         actions = ttk.Frame(self.password_tab)
         actions.pack(fill="x", pady=(0, 10))
+        self.vault_write_buttons = []
+        write_actions = {
+            "新增账号", "导入 Chrome CSV", "导出完整 CSV",
+            "导出 Google CSV", "打开 Google 导入页",
+        }
         for text, command in (
             ("新增账号", self.add_vault_entry),
             ("复制账号", self.copy_vault_username),
@@ -1811,9 +1970,12 @@ class App:
             ("导出 Google CSV", self.export_google_csv),
             ("打开 Google 导入页", self.open_chrome_passwords),
         ):
-            ttk.Button(
+            button = ttk.Button(
                 actions, text=text, command=command, style="Primary.TButton"
-            ).pack(side="left", padx=(0, 7))
+            )
+            button.pack(side="left", padx=(0, 7))
+            if text in write_actions:
+                self.vault_write_buttons.append(button)
 
         columns = ("site", "url", "username", "password", "browser", "note", "action")
         vault_table = ttk.Frame(self.password_tab, style="Panel.TFrame")
@@ -1884,11 +2046,17 @@ class App:
                 ),
             )
             button_group = tk.Frame(self.vault_tree, bg=CARD)
-            for text, command in (
+            button_specs = [
                 ("打开", lambda row=key: self.open_vault_row(row)),
-                ("编辑", lambda row=key: self.edit_vault_row(row)),
-                ("删除", lambda row=key: self.delete_vault_row(row)),
-            ):
+            ]
+            if not self.is_cloud_read_only():
+                button_specs.extend(
+                    [
+                        ("编辑", lambda row=key: self.edit_vault_row(row)),
+                        ("删除", lambda row=key: self.delete_vault_row(row)),
+                    ]
+                )
+            for text, command in button_specs:
                 tk.Button(
                     button_group, text=text, command=command, relief="flat",
                     borderwidth=0, bg=BLUE, fg="white",
@@ -1930,6 +2098,8 @@ class App:
         self.delete_vault_entry()
 
     def add_vault_entry(self):
+        if not self.require_cloud_write():
+            return
         dialog = VaultDialog(self.root, self.map)
         self.root.wait_window(dialog)
         if dialog.result:
@@ -1938,6 +2108,8 @@ class App:
             self.refresh_vault()
 
     def edit_vault_entry(self):
+        if not self.require_cloud_write():
+            return
         index = self.selected_vault_index()
         if index is None:
             return
@@ -1949,6 +2121,8 @@ class App:
             self.refresh_vault()
 
     def delete_vault_entry(self):
+        if not self.require_cloud_write():
+            return
         index = self.selected_vault_index()
         if index is None:
             return
@@ -1996,6 +2170,8 @@ class App:
             os.startfile(url)
 
     def export_vault_csv(self):
+        if not self.require_cloud_write():
+            return
         if not self.vault:
             messagebox.showinfo("没有账号", "账号库中还没有可导出的记录。")
             return
@@ -2023,6 +2199,8 @@ class App:
         )
 
     def import_chrome_csv(self):
+        if not self.require_cloud_write():
+            return
         paths = filedialog.askopenfilenames(
             title="选择一个或多个 Chrome 密码 CSV",
             filetypes=[("CSV 文件", "*.csv"), ("所有文件", "*.*")],
@@ -2085,6 +2263,8 @@ class App:
         )
 
     def export_google_csv(self):
+        if not self.require_cloud_write():
+            return
         if not self.vault:
             messagebox.showinfo("没有账号", "账号库中还没有可导出的记录。")
             return
@@ -2174,6 +2354,7 @@ class App:
         self.cloud_dialog_box.pack(fill="both", expand=True, padx=18, pady=18)
         self.render_cloud_account()
         dialog.wait_visibility()
+        center_window(dialog, self.root)
         dialog.focus_force()
 
     def render_cloud_account(self):
@@ -2199,6 +2380,8 @@ class App:
             and self.settings.get("cloud_username")
         )
         if logged_in:
+            role = self.settings.get("cloud_role", "owner")
+            role_text = "只读子账号" if role == "member" else "主账号"
             account = ttk.Frame(box, style="Panel.TFrame")
             account.pack(fill="x", pady=(4, 16))
             ttk.Label(
@@ -2209,15 +2392,16 @@ class App:
             ).pack(side="left")
             ttk.Label(
                 account,
-                text=self.settings["cloud_username"],
+                text=f"{self.settings['cloud_username']}  ·  {role_text}",
                 background=PANEL,
                 font=("Microsoft YaHei UI", 11, "bold"),
             ).pack(side="left")
             actions = ttk.Frame(box, style="Panel.TFrame")
             actions.pack(fill="x", pady=(10, 8))
-            ttk.Button(actions, text="上传同步", command=self.cloud_upload).pack(
-                side="left"
-            )
+            if role != "member":
+                ttk.Button(
+                    actions, text="上传同步", command=self.cloud_upload
+                ).pack(side="left")
             ttk.Button(actions, text="拉取同步", command=self.cloud_download).pack(
                 side="left", padx=7
             )
@@ -2293,6 +2477,28 @@ class App:
         if hasattr(self, "cloud_account_var"):
             self.cloud_account_var.set(username if token and username else "云端账号")
 
+    def is_cloud_read_only(self):
+        return bool(
+            self.settings.get("cloud_token")
+            and self.settings.get("cloud_role") == "member"
+        )
+
+    def require_cloud_write(self):
+        if not self.is_cloud_read_only():
+            return True
+        messagebox.showwarning(
+            "只读子账号",
+            "该账号只能查看、启动和关闭已分配的浏览器，不能修改浏览器或网站账号数据。",
+        )
+        return False
+
+    def update_access_controls(self):
+        state = "disabled" if self.is_cloud_read_only() else "normal"
+        if hasattr(self, "create_browser_button"):
+            self.create_browser_button.configure(state=state)
+        for button in getattr(self, "vault_write_buttons", []):
+            button.configure(state=state)
+
     def cloud_auth_values(self):
         server = normalize_server_url(self.cloud_server_var.get())
         username = self.cloud_username_var.get().strip()
@@ -2327,11 +2533,18 @@ class App:
         self.settings["cloud_server"] = server
         self.settings["cloud_username"] = result["username"]
         self.settings["cloud_token"] = result["token"]
+        self.settings["cloud_role"] = result.get("role", "owner")
+        self.settings["cloud_owner_username"] = result.get(
+            "owner_username", result["username"]
+        )
         self.cloud_username_var.set(result["username"])
         self.cloud_password_var.set("")
         self.save_settings()
         self.update_cloud_status(f"已登录：{result['username']}")
         self.render_cloud_account()
+        self.update_access_controls()
+        self.refresh()
+        self.refresh_vault()
         messagebox.showinfo("登录成功", "云端账号已连接。")
 
     def cloud_register(self):
@@ -2369,12 +2582,17 @@ class App:
         return server, token
 
     def syncable_settings(self):
-        excluded = {"password_hash", "cloud_server", "cloud_username", "cloud_token"}
+        excluded = {
+            "password_hash", "cloud_server", "cloud_username", "cloud_token",
+            "cloud_role", "cloud_owner_username",
+        }
         return {
             key: value for key, value in self.settings.items() if key not in excluded
         }
 
     def cloud_upload(self):
+        if not self.require_cloud_write():
+            return
         try:
             server, token = self.cloud_connection()
         except CloudError as error:
@@ -2446,17 +2664,29 @@ class App:
                 return
             preserved = {
                 key: self.settings.get(key, "")
-                for key in ("password_hash", "cloud_server", "cloud_username", "cloud_token")
+                for key in (
+                    "password_hash", "cloud_server", "cloud_username",
+                    "cloud_token", "cloud_role", "cloud_owner_username",
+                )
             }
             self.map = browsers
             self.settings.update(settings)
             self.settings.update(preserved)
+            access = result.get("access", {})
+            if access:
+                self.settings["cloud_role"] = access.get(
+                    "role", self.settings.get("cloud_role", "owner")
+                )
+                self.settings["cloud_owner_username"] = access.get(
+                    "owner_username", ""
+                )
             self.vault = vault
             for record in self.map.values():
                 self.profile_path(record).mkdir(parents=True, exist_ok=True)
             self.save_map()
             self.save_settings()
             save_vault(self.vault)
+            self.update_access_controls()
             self.refresh()
             self.refresh_vault()
             self.update_cloud_status(f"拉取完成：{result.get('updated_at') or '云端暂无时间'}")
@@ -2472,10 +2702,15 @@ class App:
         server = self.settings.get("cloud_server", "")
         token = self.settings.get("cloud_token", "")
         self.settings["cloud_token"] = ""
+        self.settings["cloud_role"] = ""
+        self.settings["cloud_owner_username"] = ""
         self.cloud_password_var.set("")
         self.save_settings()
         self.update_cloud_status()
         self.render_cloud_account()
+        self.update_access_controls()
+        self.refresh()
+        self.refresh_vault()
         if server and token:
             threading.Thread(
                 target=lambda: self._revoke_cloud_session(server, token),
@@ -2567,14 +2802,20 @@ class App:
         self.clear_launchers(key)
         safe_name = "".join("_" if char in '<>:"/\\|?*' else char for char in record["name"])
         launcher = LAUNCHERS / f"启动-{key}-{safe_name}.cmd"
-        content = (
-            '@echo off\r\n'
-            'cd /d "%~dp0.."\r\n'
-            f'python browser_cli.py start {key}\r\n'
-        )
+        if FROZEN:
+            cli = Path(sys.executable).parent / "cli" / "ChromeManagerCLI.exe"
+            content = f'@echo off\r\n"{cli}" start {key}\r\n'
+        else:
+            content = (
+                '@echo off\r\n'
+                'cd /d "%~dp0.."\r\n'
+                f'python browser_cli.py start {key}\r\n'
+            )
         launcher.write_text(content, encoding="utf-8-sig")
 
     def create(self):
+        if not self.require_cloud_write():
+            return
         index = self.next_index()
         dialog = BrowserDialog(self.root, "新建独立浏览器", default_port=self.next_port())
         self.root.wait_window(dialog)
@@ -2592,6 +2833,8 @@ class App:
         self.refresh()
 
     def edit(self):
+        if not self.require_cloud_write():
+            return
         keys = self.selected(single=True)
         if not keys:
             return
@@ -2624,6 +2867,8 @@ class App:
             )
 
     def clone(self):
+        if not self.require_cloud_write():
+            return
         keys = self.selected(single=True)
         if not keys:
             return
@@ -2663,6 +2908,8 @@ class App:
             messagebox.showerror("复制失败", str(exc))
 
     def delete(self):
+        if not self.require_cloud_write():
+            return
         keys = self.selected()
         if not keys:
             return
@@ -2716,6 +2963,15 @@ class App:
         ]
         arguments.extend(build_chrome_arguments(environment))
         extensions = extension_paths(profile, environment)
+        browser_key = next(
+            (key for key, value in self.map.items() if value is record),
+            "",
+        )
+        autofill = prepare_autofill_extension(
+            profile, browser_key, self.vault
+        )
+        if autofill:
+            extensions.append(autofill)
         if extensions:
             extension_value = ",".join(str(path) for path in extensions)
             arguments.append(f"--load-extension={extension_value}")
@@ -2808,6 +3064,8 @@ class App:
             self.start_browser(self.map[key], url)
 
     def backup(self):
+        if not self.require_cloud_write():
+            return
         keys = self.selected()
         if not keys:
             return
@@ -2837,6 +3095,8 @@ class App:
         messagebox.showinfo("备份完成", "备份处理完成。")
 
     def restore(self):
+        if not self.require_cloud_write():
+            return
         keys = self.selected(single=True)
         if not keys:
             return
@@ -2868,6 +3128,8 @@ class App:
             messagebox.showerror("恢复失败", str(exc))
 
     def import_browser(self):
+        if not self.require_cloud_write():
+            return
         source = filedialog.askopenfilename(
             title="导入独立浏览器",
             filetypes=[("浏览器备份 ZIP", "*.zip")],
@@ -2927,6 +3189,8 @@ class App:
             messagebox.showerror("导入失败", str(exc))
 
     def clear_browser_data(self):
+        if not self.require_cloud_write():
+            return
         keys = self.selected()
         if not keys:
             return
@@ -3036,6 +3300,8 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
         self.start_browser(record, report.as_uri())
 
     def edit_selected_environment(self):
+        if not self.require_cloud_write():
+            return
         keys = self.selected(single=True)
         if not keys:
             return
@@ -3097,22 +3363,28 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
 
     def more_menu(self):
         menu = tk.Menu(self.root, tearoff=0, bg=CARD, fg=TEXT)
-        menu.add_command(label="修改环境配置", command=self.edit_selected_environment)
+        if not self.is_cloud_read_only():
+            menu.add_command(label="修改环境配置", command=self.edit_selected_environment)
         menu.add_command(label="查看当前环境信息", command=self.view_environment)
         menu.add_command(label="环境一致性检查", command=self.check_environment)
+        if not self.is_cloud_read_only():
+            menu.add_separator()
+            menu.add_command(label="导出选中浏览器", command=self.backup)
+            menu.add_command(label="导入为新浏览器", command=self.import_browser)
+            menu.add_command(label="恢复到选中浏览器", command=self.restore)
+            menu.add_command(label="清除缓存、Cookie 和历史记录", command=self.clear_browser_data)
         menu.add_separator()
-        menu.add_command(label="导出选中浏览器", command=self.backup)
-        menu.add_command(label="导入为新浏览器", command=self.import_browser)
-        menu.add_command(label="恢复到选中浏览器", command=self.restore)
-        menu.add_command(label="清除缓存、Cookie 和历史记录", command=self.clear_browser_data)
-        menu.add_separator()
-        menu.add_command(label="复制 Codex 操作指令", command=self.copy_codex)
-        menu.add_command(label="打开数据目录", command=self.open_profiles)
-        menu.add_command(label="打开启动器目录", command=lambda: os.startfile(LAUNCHERS))
+        menu.add_command(
+            label="复制操作指令",
+            command=self.copy_operation_instructions,
+        )
+        if not self.is_cloud_read_only():
+            menu.add_command(label="打开数据目录", command=self.open_profiles)
+            menu.add_command(label="打开启动器目录", command=lambda: os.startfile(LAUNCHERS))
         menu.add_command(label="在 Chrome 中检查更新", command=self.open_update)
         menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
 
-    def copy_codex(self):
+    def copy_operation_instructions(self):
         keys = self.selected()
         if not keys:
             return
@@ -3121,6 +3393,14 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
             record = self.map[key]
             port = record["port"]
             root_path = str(ROOT)
+            if FROZEN:
+                cli_path = Path(sys.executable).parent / "cli" / "ChromeManagerCLI.exe"
+                start_command = f"& '{cli_path}' start {key}"
+            else:
+                start_command = (
+                    f"Set-Location -LiteralPath '{root_path}'\n"
+                    f"python .\\browser_cli.py start {key}"
+                )
             prompts.append(
                 f"请控制本地独立浏览器 [{record['name']}]。\n"
                 f"浏览器配置键：{key}\n"
@@ -3129,8 +3409,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
                 f"先检测 http://127.0.0.1:{port}/json/version 是否可访问。\n"
                 "如果无法访问，说明浏览器尚未启动。请直接使用终端执行以下命令启动，"
                 "不要要求我手动点击管理器：\n"
-                f"Set-Location -LiteralPath '{root_path}'\n"
-                f"python .\\browser_cli.py start {key}\n\n"
+                f"{start_command}\n\n"
                 f"启动后轮询 http://127.0.0.1:{port}/json/version，最多等待 20 秒。"
                 "端口就绪后再访问 "
                 f"http://127.0.0.1:{port}/json/list 读取现有标签页。\n"
@@ -3146,7 +3425,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
             )
         self.root.clipboard_clear()
         self.root.clipboard_append("\n\n".join(prompts))
-        messagebox.showinfo("已复制", "Codex 操作指令已复制到剪贴板。")
+        messagebox.showinfo("已复制", "操作指令已复制到剪贴板。")
 
     def open_profiles(self):
         keys = self.selected(single=True)
@@ -3202,6 +3481,8 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
                 self.start_browser(self.map[key], url)
 
     def export_config(self):
+        if not self.require_cloud_write():
+            return
         target = filedialog.asksaveasfilename(
             defaultextension=".json",
             initialfile="Chrome多开配置.json",
@@ -3212,6 +3493,8 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
             log(f"导出配置：{target}")
 
     def import_config(self):
+        if not self.require_cloud_write():
+            return
         source = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
         if not source:
             return
@@ -3293,6 +3576,8 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
         save_json(SETTINGS_FILE, self.settings)
 
     def startup_command(self):
+        if FROZEN:
+            return f'"{Path(sys.executable).resolve()}"'
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         return f'"{pythonw}" "{Path(__file__).resolve()}"'
 
@@ -3326,15 +3611,10 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
         if not chrome:
             messagebox.showerror("未找到 Chrome", "没有找到 Chrome。")
             return
-        escaped_chrome = str(chrome).replace("'", "''")
-        command = f"(Get-Item -LiteralPath '{escaped_chrome}').VersionInfo.ProductVersion"
-        result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-Command", command],
-            capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        version = result.stdout.strip() or "无法读取版本"
+        try:
+            version = ".".join(str(part) for part in win_file_version(chrome))
+        except OSError:
+            version = "无法读取版本"
         messagebox.showinfo("Chrome 版本", f"{version}\n\n{chrome}")
 
     def refresh_logs(self):
@@ -3378,6 +3658,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
         wanted_group = self.group_filter_var.get()
         wanted_status = self.status_filter_var.get()
         selected = self.tree.selection()
+        listeners = listener_pid_map()
         for button_group in getattr(self, "action_buttons", {}).values():
             button_group.destroy()
         self.action_buttons = {}
@@ -3385,9 +3666,14 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
         running = 0
         visible = 0
         for key, record in sorted(self.map.items(), key=lambda item: int(item[1]["port"])):
-            is_open = port_open(record["port"])
+            pid = listeners.get(int(record["port"]))
+            is_open = bool(pid) or port_open(record["port"])
             is_cdp = cdp_alive(record["port"]) if is_open else False
-            pid, tabs, memory = browser_stats(record["port"]) if is_cdp else (None, 0, 0)
+            pid, tabs, memory = (
+                browser_stats(record["port"], pid)
+                if is_cdp
+                else (pid, 0, 0)
+            )
             status = "运行中" if is_cdp else ("端口占用" if is_open else "未启动")
             running += bool(is_cdp)
             searchable = " ".join((
@@ -3412,15 +3698,20 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
                 tags=("running" if is_cdp else "occupied" if is_open else "stopped",),
             )
             button_group = tk.Frame(self.tree, bg=CARD)
-            button_specs = (
+            button_specs = [
                 (
                     "已启动" if is_cdp else ("不可用" if is_open else "启动"),
                     lambda browser_key=key: self.start_row(browser_key),
                     "disabled" if is_open else "normal",
                 ),
-                ("编辑", lambda browser_key=key: self.edit_row(browser_key), "normal"),
-                ("删除", lambda browser_key=key: self.delete_row(browser_key), "normal"),
-            )
+            ]
+            if not self.is_cloud_read_only():
+                button_specs.extend(
+                    [
+                        ("编辑", lambda browser_key=key: self.edit_row(browser_key), "normal"),
+                        ("删除", lambda browser_key=key: self.delete_row(browser_key), "normal"),
+                    ]
+                )
             for text, command, state in button_specs:
                 tk.Button(
                     button_group,
@@ -3562,6 +3853,18 @@ def self_test():
 
 
 if __name__ == "__main__":
+    if "--environment-controller" in sys.argv:
+        from environment_controller import main as environment_controller_main
+
+        sys.argv.remove("--environment-controller")
+        environment_controller_main()
+        raise SystemExit(0)
+    if "--proxy-forwarder" in sys.argv:
+        from proxy_forwarder import main as proxy_forwarder_main
+
+        sys.argv.remove("--proxy-forwarder")
+        proxy_forwarder_main()
+        raise SystemExit(0)
     if "--self-test" in sys.argv:
         self_test()
         raise SystemExit(0)
@@ -3572,10 +3875,12 @@ if __name__ == "__main__":
     set_windows_app_id()
     ensure_app_icon()
     root = tk.Tk()
+    configure_dialog_parent(root)
     try:
         root.tk.call("tk", "scaling", 1.1)
     except Exception:
         pass
     app = App(root)
+    root.after_idle(lambda: center_window(root))
     instance.start_listener(lambda: root.after(0, app.show_window))
     root.mainloop()

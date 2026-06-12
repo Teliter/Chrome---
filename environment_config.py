@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 from copy import deepcopy
 from pathlib import Path
 
@@ -191,6 +192,87 @@ def prepare_environment_extension(profile, environment):
     return extension
 
 
+def prepare_autofill_extension(profile, browser_key, records):
+    extension = profile / "ChromeManagerAutofill"
+    shutil.rmtree(extension, ignore_errors=True)
+    entries = []
+    matches = set()
+    for record in records:
+        if record.get("browser_key", "") != browser_key:
+            continue
+        raw_url = str(record.get("url", "")).strip()
+        if not raw_url:
+            continue
+        if "://" not in raw_url:
+            raw_url = "https://" + raw_url
+        parsed = urllib.parse.urlsplit(raw_url)
+        hostname = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https") or not hostname:
+            continue
+        password = str(record.get("password", ""))
+        if not password:
+            continue
+        entries.append({
+            "hostname": hostname,
+            "username": str(record.get("username", "")),
+            "password": password,
+        })
+        matches.add(f"*://{hostname}/*")
+    if not entries:
+        return None
+    extension.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "manifest_version": 3,
+        "name": "Chrome Manager Autofill",
+        "version": "1.0.0",
+        "description": "Fills assigned credentials for exact website domains.",
+        "content_scripts": [{
+            "matches": sorted(matches),
+            "run_at": "document_idle",
+            "all_frames": False,
+            "js": ["autofill.js"],
+        }],
+    }
+    script = f"""
+(() => {{
+  const entries = {json.dumps(entries, ensure_ascii=False)};
+  const entry = entries.find(item => item.hostname === location.hostname.toLowerCase());
+  if (!entry) return;
+  const setValue = (element, value) => {{
+    if (!element || element.value || !value) return;
+    const prototype = element instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+    if (descriptor && descriptor.set) descriptor.set.call(element, value);
+    else element.value = value;
+    element.dispatchEvent(new Event('input', {{bubbles: true}}));
+    element.dispatchEvent(new Event('change', {{bubbles: true}}));
+  }};
+  const fill = () => {{
+    const password = document.querySelector('input[type="password"]:not([disabled])');
+    if (!password) return;
+    const form = password.form || password.closest('form') || document;
+    const username = form.querySelector(
+      'input[autocomplete="username"],input[type="email"],'
+      + 'input[name*="user" i],input[name*="email" i],input[type="text"]'
+    );
+    setValue(username, entry.username);
+    setValue(password, entry.password);
+  }};
+  fill();
+  const observer = new MutationObserver(fill);
+  observer.observe(document.documentElement, {{childList: true, subtree: true}});
+  setTimeout(() => observer.disconnect(), 15000);
+}})();
+""".strip()
+    (extension / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (extension / "autofill.js").write_text(script, encoding="utf-8")
+    return extension
+
+
 def environment_script(environment):
     env = normalize_environment(environment)
     return f"""
@@ -296,8 +378,20 @@ def ensure_environment_controller(root, profile, cdp_port, environment):
     _write_json(config_path, env)
     lock_port = environment_controller_port(cdp_port)
     if not _port_open(lock_port):
-        subprocess.Popen(
-            [
+        if getattr(sys, "frozen", False):
+            manager = Path(sys.executable).with_name("ChromeManager.exe")
+            command = [
+                str(manager),
+                "--environment-controller",
+                "--cdp-port",
+                str(cdp_port),
+                "--lock-port",
+                str(lock_port),
+                "--config",
+                str(config_path),
+            ]
+        else:
+            command = [
                 sys.executable,
                 str(Path(root) / "environment_controller.py"),
                 "--cdp-port",
@@ -306,7 +400,9 @@ def ensure_environment_controller(root, profile, cdp_port, environment):
                 str(lock_port),
                 "--config",
                 str(config_path),
-            ],
+            ]
+        subprocess.Popen(
+            command,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         deadline = time.time() + 5
