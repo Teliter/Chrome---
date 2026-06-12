@@ -8,7 +8,7 @@ import shutil
 import urllib.parse
 import time
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import psutil
 from environment_config import (
@@ -23,12 +23,23 @@ from environment_config import (
 ROOT = Path(__file__).resolve().parent
 MAP_FILE = ROOT / "browser-map.json"
 PROFILES = ROOT / "profiles"
+MAX_CDP_PORT = 25535
 
 
 def load_map():
     if not MAP_FILE.exists():
         return {}
-    return json.loads(MAP_FILE.read_text(encoding="utf-8-sig"))
+    data = json.loads(MAP_FILE.read_text(encoding="utf-8-sig"))
+    changed = False
+    for record in data.values():
+        current = record.get("environment")
+        normalized = normalize_environment(current)
+        if current != normalized:
+            record["environment"] = normalized
+            changed = True
+    if changed:
+        save_map(data)
+    return data
 
 
 def save_map(data):
@@ -95,6 +106,22 @@ def find_chrome():
     return next((path for path in candidates if path.exists()), None)
 
 
+def safe_profile_path(record):
+    raw = str(record.get("profile", "")).replace("\\", "/")
+    parts = PurePosixPath(raw).parts
+    if (
+        len(parts) < 2
+        or parts[0].lower() != "profiles"
+        or any(part in (".", "..") or ":" in part or "\x00" in part for part in parts)
+    ):
+        raise SystemExit(f"不安全的浏览器数据目录：{raw or '空路径'}")
+    root = PROFILES.resolve()
+    target = (ROOT / Path(*parts)).resolve()
+    if target != root and root not in target.parents:
+        raise SystemExit(f"浏览器数据目录超出 profiles：{raw}")
+    return target
+
+
 def parse_proxy(value):
     value = value.strip()
     if "://" not in value:
@@ -112,49 +139,6 @@ def parse_proxy(value):
         "password": urllib.parse.unquote(parsed.password or ""),
         "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
     }
-
-
-def prepare_proxy_extension(profile, proxy):
-    extension = profile / "ChromeManagerProxyAuth"
-    shutil.rmtree(extension, ignore_errors=True)
-    if not proxy["username"]:
-        return None
-    if proxy["scheme"] == "socks5":
-        raise SystemExit("Chrome 不支持 SOCKS5 用户名密码认证")
-    extension.mkdir(parents=True, exist_ok=True)
-    manifest = {
-        "manifest_version": 3,
-        "name": "Chrome Manager Proxy Auth",
-        "version": "1.0.0",
-        "permissions": ["proxy", "webRequest", "webRequestAuthProvider"],
-        "host_permissions": ["<all_urls>"],
-        "background": {"service_worker": "background.js"},
-    }
-    config = {
-        "mode": "fixed_servers",
-        "rules": {
-            "singleProxy": {
-                "scheme": proxy["scheme"],
-                "host": proxy["host"],
-                "port": proxy["port"],
-            },
-            "bypassList": ["localhost", "127.0.0.1"],
-        },
-    }
-    background = (
-        f"const config = {json.dumps(config, ensure_ascii=False)};\n"
-        "chrome.proxy.settings.set({value: config, scope: 'regular'});\n"
-        "chrome.webRequest.onAuthRequired.addListener(\n"
-        f"  (details, callback) => callback({{authCredentials: "
-        f"{{username: {json.dumps(proxy['username'])}, "
-        f"password: {json.dumps(proxy['password'])}}}}}),\n"
-        "  {urls: ['<all_urls>']}, ['asyncBlocking']);\n"
-    )
-    (extension / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    (extension / "background.js").write_text(background, encoding="utf-8")
-    return extension
 
 
 def proxy_bridge_port(cdp_port):
@@ -205,6 +189,8 @@ def next_port(data):
     port = 9231
     while port in used or port_open(port):
         port += 1
+        if port > MAX_CDP_PORT:
+            raise SystemExit("没有可用的 CDP 端口")
     return port
 
 
@@ -235,6 +221,8 @@ def command_list(data, _):
 
 def command_add(data, args):
     port = args.port or next_port(data)
+    if not 1024 <= port <= MAX_CDP_PORT:
+        raise SystemExit(f"端口必须在 1024 到 {MAX_CDP_PORT} 之间")
     if any(int(record["port"]) == port for record in data.values()) or port_open(port):
         raise SystemExit(f"端口已被占用：{port}")
     index = next_index(data)
@@ -263,7 +251,7 @@ def command_start(data, args):
     chrome = find_chrome()
     if not chrome:
         raise SystemExit("未找到 Google Chrome")
-    profile = ROOT / record["profile"]
+    profile = safe_profile_path(record)
     profile.mkdir(parents=True, exist_ok=True)
     environment = normalize_environment(record.get("environment"))
     apply_profile_preferences(profile, environment)
@@ -283,8 +271,8 @@ def command_start(data, args):
         command.append(f"--load-extension={extension_value}")
     if record.get("proxy"):
         proxy = parse_proxy(record["proxy"])
-        extension = prepare_proxy_extension(profile, proxy)
-        if extension:
+        shutil.rmtree(profile / "ChromeManagerProxyAuth", ignore_errors=True)
+        if proxy["username"]:
             command.append(
                 f"--proxy-server={ensure_proxy_bridge(profile, record['port'], proxy)}"
             )

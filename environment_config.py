@@ -55,6 +55,19 @@ def normalize_environment(value=None):
         for key in result:
             if key in value:
                 result[key] = value[key]
+    legacy_mobile = bool(result["mobile_mode"] or result["touch_mode"])
+    user_agent = str(result.get("user_agent", ""))
+    if any(marker in user_agent.lower() for marker in ("android", "iphone", "mobile")):
+        legacy_mobile = True
+    if legacy_mobile:
+        result.update(
+            user_agent="",
+            window_width=1280,
+            window_height=800,
+            device_scale_factor=1.0,
+        )
+    result["mobile_mode"] = False
+    result["touch_mode"] = False
     return result
 
 

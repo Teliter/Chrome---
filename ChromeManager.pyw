@@ -53,6 +53,7 @@ VAULT_FILE = ROOT / "password-vault.json"
 LEGACY_VAULT_FILE = ROOT / "password-vault.dat"
 APP_ICON_FILE = ROOT / "chrome-manager.ico"
 LOCK_PORT = 39231
+MAX_CDP_PORT = 25535
 
 BG = "#f7f6f2"
 PANEL = "#ffffff"
@@ -94,6 +95,25 @@ def format_open_time(value):
         return moment.strftime("%Y-%m-%d %H:%M")
     except ValueError:
         return str(value).replace("T", " ")[:16]
+
+
+def normalize_web_url(value):
+    url = str(value or "").strip()
+    if not url:
+        raise ValueError("网址不能为空。")
+    if (
+        len(url) >= 3
+        and url[0].isalpha()
+        and url[1] == ":"
+        and url[2] in ("/", "\\")
+    ) or url.startswith(("/", "\\")):
+        raise ValueError("仅支持 http 或 https 网站地址。")
+    if "://" not in url:
+        url = "https://" + url
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("仅支持 http 或 https 网站地址。")
+    return url
 
 
 def load_vault():
@@ -276,51 +296,6 @@ def test_proxy(value):
     }
 
 
-def prepare_proxy_extension(profile, proxy):
-    extension = profile / "ChromeManagerProxyAuth"
-    shutil.rmtree(extension, ignore_errors=True)
-    if not proxy or not proxy["username"]:
-        return None
-    if proxy["scheme"] == "socks5":
-        raise ValueError("Chrome 不支持 SOCKS5 用户名密码认证。")
-    extension.mkdir(parents=True, exist_ok=True)
-    manifest = {
-        "manifest_version": 3,
-        "name": "Chrome Manager Proxy Auth",
-        "version": "1.0.0",
-        "permissions": ["proxy", "webRequest", "webRequestAuthProvider"],
-        "host_permissions": ["<all_urls>"],
-        "background": {"service_worker": "background.js"},
-    }
-    config = {
-        "mode": "fixed_servers",
-        "rules": {
-            "singleProxy": {
-                "scheme": proxy["scheme"],
-                "host": proxy["host"],
-                "port": proxy["port"],
-            },
-            "bypassList": ["localhost", "127.0.0.1"],
-        },
-    }
-    background = (
-        f"const config = {json.dumps(config, ensure_ascii=False)};\n"
-        "chrome.proxy.settings.set({value: config, scope: 'regular'});\n"
-        "chrome.webRequest.onAuthRequired.addListener(\n"
-        f"  (details, callback) => callback({{authCredentials: "
-        f"{{username: {json.dumps(proxy['username'])}, "
-        f"password: {json.dumps(proxy['password'])}}}}}),\n"
-        "  {urls: ['<all_urls>']},\n"
-        "  ['asyncBlocking']\n"
-        ");\n"
-    )
-    (extension / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    (extension / "background.js").write_text(background, encoding="utf-8")
-    return extension
-
-
 def proxy_bridge_port(cdp_port):
     return 30000 + int(cdp_port)
 
@@ -437,6 +412,13 @@ def safe_extract_profile(archive, destination):
         relative = Path(*path.parts[1:])
         if not relative.parts:
             continue
+        if any(
+            part in (".", "..")
+            or ":" in part
+            or "\x00" in part
+            for part in relative.parts
+        ):
+            raise ValueError(f"备份包含不安全路径：{info.filename}")
         target = (root / relative).resolve()
         if root != target and root not in target.parents:
             raise ValueError(f"备份包含不安全路径：{info.filename}")
@@ -446,6 +428,22 @@ def safe_extract_profile(archive, destination):
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info) as source, target.open("wb") as output:
                 shutil.copyfileobj(source, output)
+
+
+def safe_profile_path(record):
+    raw = str(record.get("profile", "")).replace("\\", "/")
+    parts = PurePosixPath(raw).parts
+    if (
+        len(parts) < 2
+        or parts[0].lower() != "profiles"
+        or any(part in (".", "..") or ":" in part or "\x00" in part for part in parts)
+    ):
+        raise ValueError(f"不安全的浏览器数据目录：{raw or '空路径'}")
+    root = PROFILES.resolve()
+    target = (ROOT / Path(*parts)).resolve()
+    if target != root and root not in target.parents:
+        raise ValueError(f"浏览器数据目录超出 profiles：{raw}")
+    return target
 
 
 class SingleInstance:
@@ -1253,10 +1251,14 @@ class BrowserDialog(tk.Toplevel):
             return
         try:
             port = int(self.vars["port"].get())
-            if not 1024 <= port <= 65535:
+            if not 1024 <= port <= MAX_CDP_PORT:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("端口错误", "请输入 1024 到 65535 之间的端口。", parent=self)
+            messagebox.showerror(
+                "端口错误",
+                f"请输入 1024 到 {MAX_CDP_PORT} 之间的端口。",
+                parent=self,
+            )
             return
         schedule = self.vars["schedule"].get().strip()
         proxy_value = self.vars["proxy"].get().strip()
@@ -1373,6 +1375,15 @@ class VaultDialog(tk.Toplevel):
         if not site:
             messagebox.showerror("缺少网站名称", "请输入网站名称。", parent=self)
             return
+        url = self.vars["url"].get().strip()
+        if url and url != "https://":
+            try:
+                self.vars["url"].set(normalize_web_url(url))
+            except ValueError as error:
+                messagebox.showerror("网址格式错误", str(error), parent=self)
+                return
+        elif url == "https://":
+            self.vars["url"].set("")
         browser_value = self.browser_var.get()
         browser_key = "" if browser_value == "未指定" else browser_value.split(" · ", 1)[0]
         self.result = {key: value.get().strip() for key, value in self.vars.items()}
@@ -1384,6 +1395,15 @@ class App:
     def __init__(self, root):
         self.root = root
         self.map = load_json(MAP_FILE, {})
+        map_changed = False
+        for record in self.map.values():
+            current = record.get("environment")
+            normalized = normalize_environment(current)
+            if current != normalized:
+                record["environment"] = normalized
+                map_changed = True
+        if map_changed:
+            save_json(MAP_FILE, self.map)
         self.map_mtime = MAP_FILE.stat().st_mtime_ns if MAP_FILE.exists() else 0
         self.settings = load_json(
             SETTINGS_FILE,
@@ -1650,10 +1670,18 @@ class App:
                 anchor="center", stretch=column in ("home", "proxy"),
             )
         vertical = ttk.Scrollbar(table, orient="vertical", command=self.on_tree_scroll)
+        horizontal = ttk.Scrollbar(
+            table, orient="horizontal", command=self.on_tree_xscroll
+        )
         self.tree_scrollbar = vertical
-        self.tree.configure(yscrollcommand=self.on_tree_yview)
+        self.tree_xscrollbar = horizontal
+        self.tree.configure(
+            yscrollcommand=self.on_tree_yview,
+            xscrollcommand=self.on_tree_xview,
+        )
         self.tree.grid(row=0, column=0, sticky="nsew")
         vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
         table.rowconfigure(0, weight=1)
         table.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", self.on_tree_double_click)
@@ -1671,6 +1699,14 @@ class App:
 
     def on_tree_scroll(self, *args):
         self.tree.yview(*args)
+        self.root.after_idle(self.position_action_buttons)
+
+    def on_tree_xview(self, first, last):
+        self.tree_xscrollbar.set(first, last)
+        self.root.after_idle(self.position_action_buttons)
+
+    def on_tree_xscroll(self, *args):
+        self.tree.xview(*args)
         self.root.after_idle(self.position_action_buttons)
 
     def position_action_buttons(self):
@@ -1750,8 +1786,10 @@ class App:
             ).pack(side="left", padx=(0, 7))
 
         columns = ("site", "url", "username", "password", "browser", "note", "action")
+        vault_table = ttk.Frame(self.password_tab, style="Panel.TFrame")
+        vault_table.pack(fill="both", expand=True)
         self.vault_tree = ttk.Treeview(
-            self.password_tab, columns=columns, show="headings", selectmode="browse"
+            vault_table, columns=columns, show="headings", selectmode="browse"
         )
         headers = {
             "site": "网站", "url": "网址", "username": "账号", "password": "密码",
@@ -1767,7 +1805,21 @@ class App:
                 column, width=widths[column], anchor="center",
                 stretch=column in ("url", "note"), minwidth=widths[column],
             )
-        self.vault_tree.pack(fill="both", expand=True)
+        vault_vertical = ttk.Scrollbar(
+            vault_table, orient="vertical", command=self.vault_tree.yview
+        )
+        vault_horizontal = ttk.Scrollbar(
+            vault_table, orient="horizontal", command=self.vault_tree.xview
+        )
+        self.vault_tree.configure(
+            yscrollcommand=vault_vertical.set,
+            xscrollcommand=vault_horizontal.set,
+        )
+        self.vault_tree.grid(row=0, column=0, sticky="nsew")
+        vault_vertical.grid(row=0, column=1, sticky="ns")
+        vault_horizontal.grid(row=1, column=0, sticky="ew")
+        vault_table.rowconfigure(0, weight=1)
+        vault_table.columnconfigure(0, weight=1)
         self.vault_tree.bind("<Double-1>", lambda _: self.edit_vault_entry())
         self.vault_tree.bind("<Configure>", lambda _: self.position_vault_buttons())
         self.vault_tree.bind(
@@ -1901,6 +1953,11 @@ class App:
         url = record.get("url", "").strip()
         if not url:
             messagebox.showinfo("没有网址", "这条记录没有保存网站地址。")
+            return
+        try:
+            url = normalize_web_url(url)
+        except ValueError as error:
+            messagebox.showerror("网址格式错误", str(error))
             return
         browser = self.map.get(record.get("browser_key", ""))
         if browser:
@@ -2112,10 +2169,12 @@ class App:
         port = 9231
         while port in used or port_open(port):
             port += 1
+            if port > MAX_CDP_PORT:
+                raise RuntimeError("没有可用的 CDP 端口。")
         return port
 
     def profile_path(self, record):
-        return ROOT / record["profile"]
+        return safe_profile_path(record)
 
     def save_map(self):
         save_json(MAP_FILE, self.map)
@@ -2128,10 +2187,25 @@ class App:
         if current_mtime == self.map_mtime:
             return
         incoming = load_json(MAP_FILE, None)
-        if isinstance(incoming, dict):
-            self.map = incoming
+        if not isinstance(incoming, dict) or not all(
+            isinstance(record, dict) for record in incoming.values()
+        ):
+            log("检测到无效的 browser-map.json，已保留当前配置")
             self.map_mtime = current_mtime
-            log("检测到外部配置变更，已自动重新加载 browser-map.json")
+            return
+        changed = False
+        for record in incoming.values():
+            current = record.get("environment")
+            normalized = normalize_environment(current)
+            if current != normalized:
+                record["environment"] = normalized
+                changed = True
+        self.map = incoming
+        if changed:
+            self.save_map()
+        else:
+            self.map_mtime = current_mtime
+        log("检测到外部配置变更，已自动重新加载 browser-map.json")
 
     def port_conflict(self, port, exclude=None):
         configured = any(key != exclude and int(record["port"]) == int(port)
@@ -2304,11 +2378,11 @@ class App:
         if record.get("proxy"):
             try:
                 proxy = parse_proxy(record["proxy"])
-                extension = prepare_proxy_extension(profile, proxy)
             except ValueError as error:
                 messagebox.showerror("代理配置错误", str(error))
                 return False
-            if extension:
+            shutil.rmtree(profile / "ChromeManagerProxyAuth", ignore_errors=True)
+            if proxy["username"]:
                 bridge = ensure_proxy_bridge(profile, record["port"], proxy)
                 arguments.append(f"--proxy-server={bridge}")
             else:
@@ -2486,6 +2560,7 @@ class App:
                 profile=f"profiles/browser-{index}",
                 auto_start=False,
                 schedule="",
+                last_open_at="",
                 created_at=datetime.now().isoformat(timespec="seconds"),
                 environment=normalize_environment(record.get("environment")),
             )
@@ -2813,8 +2888,11 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
                 continue
             record = original.copy()
             index = self.next_index()
-            port = int(record.get("port", self.next_port(used_ports)))
-            if port in used_ports or port_open(port):
+            try:
+                port = int(record.get("port", self.next_port(used_ports)))
+            except (TypeError, ValueError):
+                port = self.next_port(used_ports)
+            if not 1024 <= port <= MAX_CDP_PORT or port in used_ports or port_open(port):
                 port = self.next_port(used_ports)
             used_ports.add(port)
             profile = str(record.get("profile", f"profiles/browser-{index}")).replace("\\", "/")
@@ -2822,6 +2900,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
             if (
                 Path(profile).is_absolute()
                 or ".." in profile_parts
+                or any(":" in part or "\x00" in part for part in profile_parts)
                 or not profile_parts
                 or profile_parts[0].lower() != "profiles"
             ):
@@ -2837,6 +2916,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
             record.setdefault("note", "")
             record.setdefault("schedule", "")
             record.setdefault("auto_start", False)
+            record["environment"] = normalize_environment(record.get("environment"))
             key = f"browser{index}"
             self.map[key] = record
             self.profile_path(record).mkdir(parents=True, exist_ok=True)
@@ -3066,6 +3146,25 @@ def self_test():
     assert find_chrome() is not None
     assert format_open_time("") == "从未打开"
     assert format_open_time("2026-06-12T09:08:07") == "2026-06-12 09:08"
+    assert normalize_web_url("example.com") == "https://example.com"
+    failed = False
+    try:
+        normalize_web_url("C:/Windows/notepad.exe")
+    except ValueError:
+        failed = True
+    assert failed
+    legacy_mobile = normalize_environment({
+        "mobile_mode": True,
+        "touch_mode": True,
+        "user_agent": "Mozilla/5.0 Android Mobile",
+        "window_width": 412,
+        "window_height": 915,
+        "device_scale_factor": 3,
+    })
+    assert not legacy_mobile["mobile_mode"]
+    assert not legacy_mobile["touch_mode"]
+    assert legacy_mobile["user_agent"] == ""
+    assert legacy_mobile["window_width"] == 1280
     environment = normalize_environment({
         "window_width": 900,
         "window_height": 700,
@@ -3100,6 +3199,16 @@ def self_test():
     failed = False
     try:
         with zipfile.ZipFile(bad_path) as archive:
+            safe_extract_profile(archive, destination)
+    except ValueError:
+        failed = True
+    assert failed
+    bad_windows_path = test_root / "bad-windows.zip"
+    with zipfile.ZipFile(bad_windows_path, "w") as archive:
+        archive.writestr("profile/C:/outside.txt", "bad")
+    failed = False
+    try:
+        with zipfile.ZipFile(bad_windows_path) as archive:
             safe_extract_profile(archive, destination)
     except ValueError:
         failed = True

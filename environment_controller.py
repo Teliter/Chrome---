@@ -1,6 +1,7 @@
 import argparse
 import json
 import socket
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -113,8 +114,17 @@ def run(cdp_port, lock_port, config_path):
     lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     lock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     lock.bind(("127.0.0.1", lock_port))
-    lock.listen(4)
-    lock.setblocking(False)
+    lock.listen()
+
+    def accept_probes():
+        while True:
+            try:
+                connection, _ = lock.accept()
+                connection.close()
+            except OSError:
+                return
+
+    threading.Thread(target=accept_probes, daemon=True).start()
     applied = {}
     while True:
         try:
@@ -126,13 +136,18 @@ def run(cdp_port, lock_port, config_path):
             except Exception:
                 return
         environment = load_environment(config_path)
+        try:
+            config_mtime = Path(config_path).stat().st_mtime_ns
+        except OSError:
+            time.sleep(0.8)
+            continue
         current = set()
         for page in pages:
             target_id = page.get("id") or page["webSocketDebuggerUrl"]
             current.add(target_id)
             marker = (
                 page["webSocketDebuggerUrl"],
-                Path(config_path).stat().st_mtime_ns,
+                config_mtime,
             )
             if applied.get(target_id) == marker:
                 continue
