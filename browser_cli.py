@@ -7,6 +7,7 @@ import sys
 import shutil
 import urllib.parse
 import time
+from datetime import datetime
 from pathlib import Path
 
 import psutil
@@ -226,6 +227,7 @@ def command_list(data, _):
                 "port": record["port"],
                 "running": port_open(int(record["port"])),
                 "profile": record["profile"],
+                "last_open_at": record.get("last_open_at", ""),
             }
         )
     print(json.dumps(rows, ensure_ascii=False, indent=2))
@@ -250,6 +252,7 @@ def command_add(data, args):
         "auto_start": False,
         "profile": profile,
         "environment": normalize_environment(),
+        "last_open_at": "",
     }
     save_map(data)
     print(json.dumps({"key": key, **data[key]}, ensure_ascii=False, indent=2))
@@ -295,6 +298,12 @@ def command_start(data, args):
     if cdp_alive(record["port"]):
         ensure_environment_controller(
             ROOT, profile, record["port"], environment
+        )
+        record["last_open_at"] = datetime.now().isoformat(timespec="seconds")
+        save_map(data)
+    else:
+        raise SystemExit(
+            f"浏览器启动超时：{record['name']}，端口 {record['port']}"
         )
     print(f"已启动：{record['name']}，端口 {record['port']}")
 

@@ -86,6 +86,16 @@ def save_json(path, data):
     os.replace(temporary, path)
 
 
+def format_open_time(value):
+    if not value:
+        return "从未打开"
+    try:
+        moment = datetime.fromisoformat(str(value))
+        return moment.strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return str(value).replace("T", " ")[:16]
+
+
 def load_vault():
     if VAULT_FILE.exists():
         return load_json(VAULT_FILE, [])
@@ -1614,7 +1624,10 @@ class App:
         ttk.Button(toolbar, text="更多操作", command=self.more_menu).pack(side="left")
         ttk.Button(toolbar, text="全部启动", command=self.start_all).pack(side="right")
 
-        columns = ("name", "group", "port", "status", "pid", "tabs", "memory", "home", "proxy", "action")
+        columns = (
+            "name", "group", "port", "status", "pid", "tabs", "memory",
+            "last_open", "home", "proxy", "action",
+        )
         table = ttk.Frame(self.main_tab, style="Panel.TFrame")
         table.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(
@@ -1623,11 +1636,12 @@ class App:
         headers = {
             "name": "浏览器名称", "action": "操作", "group": "分组", "port": "CDP 端口",
             "status": "设备状态", "pid": "进程 PID", "tabs": "标签页", "memory": "内存",
-            "home": "启动首页", "proxy": "代理配置",
+            "last_open": "上次打开时间", "home": "启动首页", "proxy": "代理配置",
         }
         widths = {
             "name": 110, "group": 80, "port": 70, "status": 75, "pid": 70,
-            "tabs": 55, "memory": 70, "home": 150, "proxy": 100, "action": 220,
+            "tabs": 55, "memory": 70, "last_open": 135,
+            "home": 140, "proxy": 95, "action": 220,
         }
         for column in columns:
             self.tree.heading(column, text=headers[column], anchor="center")
@@ -2173,6 +2187,7 @@ class App:
             return
         dialog.result["profile"] = old["profile"]
         dialog.result["created_at"] = old.get("created_at", "")
+        dialog.result["last_open_at"] = old.get("last_open_at", "")
         self.map[key] = dialog.result
         self.save_map()
         self.write_launcher(key, dialog.result)
@@ -2207,6 +2222,7 @@ class App:
         record = source.copy()
         record.update(name=name, port=self.next_port(), profile=f"profiles/browser-{index}",
                       auto_start=False, schedule="",
+                      last_open_at="",
                       created_at=datetime.now().isoformat(timespec="seconds"))
         source_path = self.profile_path(source)
         target_path = self.profile_path(record)
@@ -2307,6 +2323,11 @@ class App:
             ensure_environment_controller(
                 ROOT, profile, record["port"], environment
             )
+            record["last_open_at"] = datetime.now().isoformat(timespec="seconds")
+            self.save_map()
+        else:
+            log(f"浏览器启动超时：{record['name']}，端口 {record['port']}")
+            return False
         log(f"启动浏览器：{record['name']}，端口 {record['port']}")
         return True
 
@@ -2961,6 +2982,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
                 values=(
                     record["name"], record.get("group", ""), record["port"], status,
                     pid or "", tabs, f"{memory:.0f} MB" if memory else "",
+                    format_open_time(record.get("last_open_at")),
                     record.get("home", ""), record.get("proxy", ""), "",
                 ),
                 tags=("running" if is_cdp else "occupied" if is_open else "stopped",),
@@ -3042,6 +3064,8 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
 
 def self_test():
     assert find_chrome() is not None
+    assert format_open_time("") == "从未打开"
+    assert format_open_time("2026-06-12T09:08:07") == "2026-06-12 09:08"
     environment = normalize_environment({
         "window_width": 900,
         "window_height": 700,
