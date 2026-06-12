@@ -1670,6 +1670,11 @@ class App:
                    style="Danger.TButton").pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="更多操作", command=self.more_menu).pack(side="left")
         ttk.Button(toolbar, text="全部启动", command=self.start_all).pack(side="right")
+        ttk.Label(
+            self.main_tab,
+            text="点击列表中的“启动”可打开对应浏览器；按 Ctrl 或 Shift 可多选。",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, 8))
 
         columns = (
             "name", "group", "port", "status", "pid", "tabs", "memory",
@@ -1717,8 +1722,6 @@ class App:
         self.tree.tag_configure("running", foreground=GREEN)
         self.tree.tag_configure("occupied", foreground=RED)
         self.action_buttons = {}
-        ttk.Label(self.main_tab, text="点击列表中的“启动”可打开对应浏览器；按 Ctrl 或 Shift 可多选。",
-                  style="Muted.TLabel").pack(anchor="w", pady=8)
 
     def on_tree_yview(self, first, last):
         self.tree_scrollbar.set(first, last)
@@ -2167,7 +2170,18 @@ class App:
             except tk.TclError:
                 pass
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
-        box = ttk.Frame(dialog, style="Panel.TFrame", padding=24)
+        self.cloud_dialog_box = ttk.Frame(dialog, style="Panel.TFrame", padding=24)
+        self.cloud_dialog_box.pack(fill="both", expand=True, padx=18, pady=18)
+        self.render_cloud_account()
+        dialog.wait_visibility()
+        dialog.focus_force()
+
+    def render_cloud_account(self):
+        if not self.cloud_dialog or not self.cloud_dialog.winfo_exists():
+            return
+        box = self.cloud_dialog_box
+        for child in box.winfo_children():
+            child.destroy()
         box.pack(fill="both", expand=True, padx=18, pady=18)
         ttk.Label(
             box,
@@ -2180,46 +2194,67 @@ class App:
             style="PanelMuted.TLabel",
         ).pack(anchor="w", pady=(4, 18))
 
-        fields = (
-            ("用户名", self.cloud_username_var, False),
-            ("密码", self.cloud_password_var, True),
+        logged_in = bool(
+            self.settings.get("cloud_token")
+            and self.settings.get("cloud_username")
         )
-        for label, variable, secret in fields:
-            row = ttk.Frame(box, style="Panel.TFrame")
-            row.pack(fill="x", pady=6)
-            ttk.Label(row, text=label, width=12, background=PANEL).pack(side="left")
-            ttk.Entry(
-                row,
-                textvariable=variable,
-                show="*" if secret else "",
-                width=62,
-            ).pack(side="left", fill="x", expand=True)
-
-        actions = ttk.Frame(box, style="Panel.TFrame")
-        actions.pack(fill="x", pady=(16, 8))
-        ttk.Button(actions, text="注册账号", command=self.cloud_register).pack(
-            side="left"
-        )
-        ttk.Button(actions, text="登录", command=self.cloud_login).pack(
-            side="left", padx=7
-        )
-        ttk.Button(actions, text="上传同步", command=self.cloud_upload).pack(
-            side="left", padx=7
-        )
-        ttk.Button(actions, text="拉取同步", command=self.cloud_download).pack(
-            side="left", padx=7
-        )
-        ttk.Button(actions, text="退出登录", command=self.cloud_logout).pack(
-            side="left", padx=7
-        )
+        if logged_in:
+            account = ttk.Frame(box, style="Panel.TFrame")
+            account.pack(fill="x", pady=(4, 16))
+            ttk.Label(
+                account,
+                text="当前账号",
+                width=12,
+                background=PANEL,
+            ).pack(side="left")
+            ttk.Label(
+                account,
+                text=self.settings["cloud_username"],
+                background=PANEL,
+                font=("Microsoft YaHei UI", 11, "bold"),
+            ).pack(side="left")
+            actions = ttk.Frame(box, style="Panel.TFrame")
+            actions.pack(fill="x", pady=(10, 8))
+            ttk.Button(actions, text="上传同步", command=self.cloud_upload).pack(
+                side="left"
+            )
+            ttk.Button(actions, text="拉取同步", command=self.cloud_download).pack(
+                side="left", padx=7
+            )
+            ttk.Button(actions, text="退出登录", command=self.cloud_logout).pack(
+                side="left", padx=7
+            )
+        else:
+            fields = (
+                ("用户名", self.cloud_username_var, False),
+                ("密码", self.cloud_password_var, True),
+            )
+            for label, variable, secret in fields:
+                row = ttk.Frame(box, style="Panel.TFrame")
+                row.pack(fill="x", pady=6)
+                ttk.Label(
+                    row, text=label, width=12, background=PANEL
+                ).pack(side="left")
+                ttk.Entry(
+                    row,
+                    textvariable=variable,
+                    show="*" if secret else "",
+                    width=62,
+                ).pack(side="left", fill="x", expand=True)
+            actions = ttk.Frame(box, style="Panel.TFrame")
+            actions.pack(fill="x", pady=(16, 8))
+            ttk.Button(actions, text="注册账号", command=self.cloud_register).pack(
+                side="left"
+            )
+            ttk.Button(actions, text="登录", command=self.cloud_login).pack(
+                side="left", padx=7
+            )
         ttk.Label(
             box,
             textvariable=self.cloud_status_var,
             style="PanelMuted.TLabel",
         ).pack(anchor="w", pady=(10, 0))
         self.update_cloud_status()
-        dialog.wait_visibility()
-        dialog.focus_force()
 
     def build_settings(self):
         box = ttk.Frame(self.settings_tab, style="Panel.TFrame", padding=22)
@@ -2296,6 +2331,7 @@ class App:
         self.cloud_password_var.set("")
         self.save_settings()
         self.update_cloud_status(f"已登录：{result['username']}")
+        self.render_cloud_account()
         messagebox.showinfo("登录成功", "云端账号已连接。")
 
     def cloud_register(self):
@@ -2439,6 +2475,7 @@ class App:
         self.cloud_password_var.set("")
         self.save_settings()
         self.update_cloud_status()
+        self.render_cloud_account()
         if server and token:
             threading.Thread(
                 target=lambda: self._revoke_cloud_session(server, token),
