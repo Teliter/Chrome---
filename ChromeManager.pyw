@@ -2156,8 +2156,8 @@ class App:
         dialog = tk.Toplevel(self.root)
         self.cloud_dialog = dialog
         dialog.title("云端账号")
-        dialog.geometry("720x430")
-        dialog.minsize(660, 400)
+        dialog.geometry("720x370")
+        dialog.minsize(660, 350)
         dialog.configure(bg=BG)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -2181,7 +2181,6 @@ class App:
         ).pack(anchor="w", pady=(4, 18))
 
         fields = (
-            ("服务器地址", self.cloud_server_var, False),
             ("用户名", self.cloud_username_var, False),
             ("密码", self.cloud_password_var, True),
         )
