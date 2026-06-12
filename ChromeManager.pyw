@@ -51,7 +51,7 @@ except ImportError:
     ImageTk = None
 
 
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.1.1"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ROOT = (
@@ -2339,8 +2339,8 @@ class App:
         dialog = tk.Toplevel(self.root)
         self.cloud_dialog = dialog
         dialog.title("云端账号")
-        dialog.geometry("720x370")
-        dialog.minsize(660, 350)
+        dialog.geometry("760x440")
+        dialog.minsize(680, 400)
         dialog.configure(bg=BG)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -2379,6 +2379,29 @@ class App:
             self.settings.get("cloud_token")
             and self.settings.get("cloud_username")
         )
+        server_row = ttk.Frame(box, style="Panel.TFrame")
+        server_row.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            server_row, text="服务器地址", width=12, background=PANEL
+        ).pack(side="left")
+        ttk.Entry(
+            server_row,
+            textvariable=self.cloud_server_var,
+            state="readonly" if logged_in else "normal",
+            width=58,
+        ).pack(side="left", fill="x", expand=True)
+        if logged_in:
+            ttk.Button(
+                server_row,
+                text="更换服务器",
+                command=self.cloud_switch_server,
+            ).pack(side="left", padx=(8, 0))
+        else:
+            ttk.Label(
+                box,
+                text="本机可填写 http://127.0.0.1:8787；远程服务器请使用 HTTPS 地址。",
+                style="PanelMuted.TLabel",
+            ).pack(anchor="w", pady=(0, 8))
         if logged_in:
             role = self.settings.get("cloud_role", "owner")
             role_text = "只读子账号" if role == "member" else "主账号"
@@ -2716,6 +2739,16 @@ class App:
                 target=lambda: self._revoke_cloud_session(server, token),
                 daemon=True,
             ).start()
+
+    def cloud_switch_server(self):
+        if not messagebox.askyesno(
+            "更换服务器",
+            "更换服务器需要退出当前云端账号。是否继续？",
+        ):
+            return
+        self.cloud_logout()
+        self.cloud_server_var.set("")
+        self.render_cloud_account()
 
     def _revoke_cloud_session(self, server, token):
         try:

@@ -57,6 +57,8 @@ powershell -ExecutionPolicy Bypass -File .\packaging\build-installer.ps1
 
 注意：子账号拉取的网站账号会以明文保存在该 Windows 用户的数据目录中。应用内只读权限不是 Windows 文件系统或终端的强隔离；需要更强控制时，应使用独立 Windows 账号、磁盘加密和设备访问策略。
 
+桌面客户端不会写死云端服务地址。登录或注册时需要填写服务器地址，本机开发服务可使用 `http://127.0.0.1:8787`，任意部署了兼容 API 的远程服务器均可使用，但远程连接必须使用 HTTPS。
+
 ## 运行环境
 
 - Windows 10 或 Windows 11
