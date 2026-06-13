@@ -1,5 +1,5 @@
 #define MyAppName "Chrome 多开管理器"
-#define MyAppVersion "3.1.1"
+#define MyAppVersion "3.2.0"
 #define MyAppPublisher "Chrome Manager"
 #define MyAppExeName "ChromeManager.exe"
 
@@ -13,7 +13,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\release
-OutputBaseFilename=Chrome多开管理器-Setup-3.1.1
+OutputBaseFilename=ChromeMultiManager-Setup-3.2.0
 SetupIconFile=..\chrome-manager.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
@@ -38,4 +38,4 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startup
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall

@@ -11,6 +11,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -19,7 +20,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 import psutil
 from cloud_client import (
@@ -51,7 +52,11 @@ except ImportError:
     ImageTk = None
 
 
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.2.0"
+UPDATE_REPOSITORY = "Teliter/Chrome---"
+UPDATE_API_URL = (
+    f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest"
+)
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ROOT = (
@@ -88,6 +93,38 @@ _DIALOG_ROOT = None
 
 for folder in (PROFILES, LAUNCHERS, BACKUPS):
     folder.mkdir(parents=True, exist_ok=True)
+
+
+def enable_windows_dpi_awareness():
+    if sys.platform != "win32":
+        return
+    try:
+        user32 = ctypes.windll.user32
+        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+def system_tk_scaling():
+    if sys.platform == "win32":
+        try:
+            dpi = int(ctypes.windll.user32.GetDpiForSystem())
+            if dpi > 0:
+                return max(1.0, min(3.0, dpi / 72.0))
+        except Exception:
+            pass
+    return None
 
 
 def center_window(window, parent=None):
@@ -146,6 +183,91 @@ def load_json(path, default):
         return json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else default
     except Exception:
         return default
+
+
+def version_tuple(value):
+    parts = []
+    for item in str(value or "").strip().lstrip("vV").split("."):
+        digits = "".join(char for char in item if char.isdigit())
+        parts.append(int(digits or 0))
+    return tuple((parts + [0, 0, 0])[:3])
+
+
+def latest_release_info(timeout=20):
+    request = urllib.request.Request(
+        UPDATE_API_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"ChromeMultiManager/{APP_VERSION}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            release = json.loads(response.read().decode("utf-8"))
+    except Exception as error:
+        raise RuntimeError(f"无法检查新版本：{error}") from error
+    tag = str(release.get("tag_name", "")).strip()
+    asset = next(
+        (
+            item for item in release.get("assets", [])
+            if str(item.get("name", "")).lower().endswith(".exe")
+            and "setup" in str(item.get("name", "")).lower()
+        ),
+        None,
+    )
+    if not tag or not asset or not asset.get("browser_download_url"):
+        raise RuntimeError("最新版本没有可用的 Windows 安装包。")
+    return {
+        "version": tag.lstrip("vV"),
+        "tag": tag,
+        "name": release.get("name") or tag,
+        "notes": str(release.get("body", "")).strip(),
+        "page_url": release.get("html_url", ""),
+        "asset_name": asset.get("name", "ChromeMultiManager-Setup.exe"),
+        "download_url": asset["browser_download_url"],
+        "size": int(asset.get("size", 0)),
+        "digest": str(asset.get("digest", "")),
+    }
+
+
+def download_release_installer(release, progress=None):
+    target_dir = Path(tempfile.gettempdir()) / "ChromeMultiManagerUpdate"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / release["asset_name"]
+    partial = target.with_suffix(target.suffix + ".part")
+    request = urllib.request.Request(
+        release["download_url"],
+        headers={"User-Agent": f"ChromeMultiManager/{APP_VERSION}"},
+    )
+    digest = hashlib.sha256()
+    downloaded = 0
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            total = int(
+                response.headers.get("Content-Length")
+                or release["size"]
+                or 0
+            )
+            with partial.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 256)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    downloaded += len(chunk)
+                    if progress:
+                        progress(downloaded, total)
+        expected = release["digest"].removeprefix("sha256:").strip().lower()
+        actual = digest.hexdigest().lower()
+        if expected and actual != expected:
+            raise RuntimeError("安装包校验失败，文件可能不完整或已被修改。")
+        os.replace(partial, target)
+        return target, actual
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
 
 
 def save_json(path, data):
@@ -1218,18 +1340,18 @@ class BrowserDialog(tk.Toplevel):
         self.grab_set()
         self.resizable(True, True)
         screen_h = self.winfo_screenheight()
-        height = min(680, max(500, screen_h - 100))
-        self.geometry(f"570x{height}")
-        self.minsize(500, 480)
+        height = min(700, max(540, screen_h - 120))
+        self.geometry(f"680x{height}")
+        self.minsize(620, 520)
         self.after_idle(lambda: center_window(self, parent))
 
         data = record or {}
         self.environment = normalize_environment(data.get("environment"))
-        shell = tk.Frame(self, bg=BG, padx=18, pady=18)
+        shell = tk.Frame(self, bg=BG, padx=14, pady=14)
         shell.pack(fill="both", expand=True)
         card = tk.Frame(shell, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         card.pack(fill="both", expand=True)
-        header = ttk.Frame(card, style="Panel.TFrame", padding=(24, 20))
+        header = ttk.Frame(card, style="Panel.TFrame", padding=(22, 15))
         header.pack(fill="x")
         ttk.Label(header, text=title, style="DialogTitle.TLabel").pack(anchor="w")
         ttk.Label(header, text="填写独立浏览器信息，保存后立即同步到管理列表。",
@@ -1240,10 +1362,10 @@ class BrowserDialog(tk.Toplevel):
             bg="#f7f3ee",
             highlightthickness=1,
             highlightbackground=BORDER,
-            padx=16,
-            pady=12,
+            padx=14,
+            pady=10,
         )
-        environment_card.pack(fill="x", padx=22, pady=(0, 10))
+        environment_card.pack(fill="x", padx=20, pady=(0, 8))
         environment_text = tk.Frame(environment_card, bg="#f7f3ee")
         environment_text.pack(side="left", fill="x", expand=True)
         tk.Label(
@@ -1259,7 +1381,7 @@ class BrowserDialog(tk.Toplevel):
             fg=MUTED,
             justify="left",
             anchor="w",
-            font=("Microsoft YaHei UI", 9, "bold"),
+            font=("Microsoft YaHei UI", 9),
         )
         self.environment_summary.pack(anchor="w", pady=(4, 0))
         ttk.Button(
@@ -1270,7 +1392,7 @@ class BrowserDialog(tk.Toplevel):
         ).pack(side="right", padx=(12, 0))
         self.update_environment_summary()
 
-        button_bar = ttk.Frame(card, style="Panel.TFrame", padding=(22, 16))
+        button_bar = ttk.Frame(card, style="Panel.TFrame", padding=(20, 12))
         button_bar.pack(side="bottom", fill="x")
         ttk.Button(button_bar, text="取消", style="Primary.TButton",
                    command=self.destroy).pack(side="right")
@@ -1284,47 +1406,82 @@ class BrowserDialog(tk.Toplevel):
         canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
-        self.form = ttk.Frame(canvas, style="Panel.TFrame", padding=(24, 10, 24, 20))
+        self.form = ttk.Frame(canvas, style="Panel.TFrame", padding=(20, 8, 20, 16))
         window = canvas.create_window((0, 0), window=self.form, anchor="nw")
         self.form.bind("<Configure>", lambda _: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
         canvas.bind_all("<MouseWheel>", lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"))
         self.bind("<Destroy>", lambda _: canvas.unbind_all("<MouseWheel>"))
 
-        fields = [
-            ("名称", "name", data.get("name", "")),
-            ("分组", "group", data.get("group", "默认分组")),
-            ("CDP 端口", "port", str(data.get("port", default_port))),
-            ("启动首页", "home", data.get("home", "about:blank")),
-            ("代理服务器（可留空）", "proxy", data.get("proxy", "")),
-            ("备注", "note", data.get("note", "")),
-            ("定时启动（HH:MM，可留空）", "schedule", data.get("schedule", "")),
-        ]
+        self.form.columnconfigure(0, weight=1)
+        self.form.columnconfigure(1, weight=1)
         self.vars = {}
-        for label, key, value in fields:
-            ttk.Label(self.form, text=label, background=PANEL).pack(anchor="w", pady=(9, 4))
+
+        def add_field(label, key, value, row, column=0, columnspan=1):
+            field = ttk.Frame(self.form, style="Panel.TFrame")
+            field.grid(
+                row=row,
+                column=column,
+                columnspan=columnspan,
+                sticky="ew",
+                padx=(0, 8) if column == 0 and columnspan == 1 else (8, 0)
+                if column == 1 else 0,
+                pady=(5, 3),
+            )
+            ttk.Label(field, text=label, background=PANEL).pack(
+                anchor="w", pady=(0, 4)
+            )
             variable = tk.StringVar(value=value)
             self.vars[key] = variable
-            ttk.Entry(self.form, textvariable=variable).pack(fill="x", ipady=6)
-            if key == "proxy":
-                proxy_row = ttk.Frame(self.form, style="Panel.TFrame")
-                proxy_row.pack(fill="x", pady=(7, 2))
-                self.proxy_test_button = ttk.Button(
-                    proxy_row, text="测试代理", style="Primary.TButton",
-                    command=self.run_proxy_test,
-                )
-                self.proxy_test_button.pack(side="left")
-                self.proxy_result = ttk.Label(
-                    proxy_row, text="支持 http://用户:密码@IP:端口",
-                    style="PanelMuted.TLabel",
-                )
-                self.proxy_result.pack(side="left", padx=10)
+            entry = ttk.Entry(field, textvariable=variable)
+            entry.pack(fill="x")
+            return entry
+
+        first_entry = add_field("名称", "name", data.get("name", ""), 0, 0)
+        add_field("分组", "group", data.get("group", "默认分组"), 0, 1)
+        add_field(
+            "CDP 端口", "port", str(data.get("port", default_port)), 1, 0
+        )
+        add_field(
+            "启动首页", "home", data.get("home", "about:blank"), 1, 1
+        )
+        add_field(
+            "代理服务器（可留空）", "proxy", data.get("proxy", ""), 2, 0, 2
+        )
+        proxy_row = ttk.Frame(self.form, style="Panel.TFrame")
+        proxy_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(3, 5))
+        self.proxy_test_button = ttk.Button(
+            proxy_row, text="测试代理", style="Primary.TButton",
+            command=self.run_proxy_test,
+        )
+        self.proxy_test_button.pack(side="left")
+        self.proxy_result = ttk.Label(
+            proxy_row, text="支持 http://用户:密码@IP:端口",
+            style="PanelMuted.TLabel",
+        )
+        self.proxy_result.pack(side="left", padx=10)
+        add_field("备注", "note", data.get("note", ""), 4, 0, 2)
+        add_field(
+            "定时启动（HH:MM，可留空）",
+            "schedule",
+            data.get("schedule", ""),
+            5,
+            0,
+        )
         self.auto_start = tk.BooleanVar(value=data.get("auto_start", False))
-        ttk.Checkbutton(self.form, text="管理器启动时自动打开此浏览器",
-                        variable=self.auto_start).pack(anchor="w", pady=(14, 8))
+        ttk.Checkbutton(
+            self.form,
+            text="管理器启动时自动打开此浏览器",
+            variable=self.auto_start,
+        ).grid(row=5, column=1, sticky="w", padx=(16, 0), pady=(30, 3))
         self.bind("<Control-Return>", lambda _: self.save())
         self.bind("<Escape>", lambda _: self.destroy())
-        self.after(50, self.focus_force)
+
+        def initialize_dialog():
+            canvas.yview_moveto(0)
+            first_entry.focus_set()
+
+        self.after_idle(initialize_dialog)
 
     def edit_environment(self):
         dialog = EnvironmentDialog(self, self.environment)
@@ -1580,43 +1737,62 @@ class App:
         self.start_tray()
         self.auto_start()
         self.tick()
+        if FROZEN and self.settings.get("auto_check_updates", True):
+            self.root.after(5000, self.auto_check_app_update)
 
     def configure_style(self):
         self.root.title(f"Chrome 多开管理器 {APP_VERSION}")
-        self.root.geometry("1380x780")
-        self.root.minsize(1120, 650)
+        self.root.geometry("1380x800")
+        self.root.minsize(1080, 640)
         self.root.configure(bg=BG)
         self.apply_window_icon()
+        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkTooltipFont"):
+            try:
+                tkfont.nametofont(name).configure(
+                    family="Microsoft YaHei UI", size=10
+                )
+            except tk.TclError:
+                pass
+        try:
+            tkfont.nametofont("TkHeadingFont").configure(
+                family="Microsoft YaHei UI", size=10, weight="bold"
+            )
+            tkfont.nametofont("TkFixedFont").configure(
+                family="Consolas", size=10
+            )
+        except tk.TclError:
+            pass
         style = ttk.Style()
         style.theme_use("clam")
         style.configure(".", background=BG, foreground=TEXT, fieldbackground=CARD,
                         bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER,
-                        font=("Microsoft YaHei UI", 10, "bold"))
+                        font=("Microsoft YaHei UI", 10))
         style.configure("TFrame", background=BG)
         style.configure("Panel.TFrame", background=PANEL)
         style.configure("TLabel", background=BG, foreground=TEXT)
-        style.configure("Title.TLabel", background=PANEL, font=("Microsoft YaHei UI", 20, "bold"),
+        style.configure("Title.TLabel", background=PANEL, font=("Microsoft YaHei UI", 17, "bold"),
                         foreground=TEXT)
-        style.configure("Section.TLabel", background=BG, font=("Microsoft YaHei UI", 15, "bold"),
+        style.configure("Section.TLabel", background=BG, font=("Microsoft YaHei UI", 14, "bold"),
                         foreground=TEXT)
         style.configure("DialogTitle.TLabel", background=PANEL, foreground=TEXT,
-                        font=("Microsoft YaHei UI", 15, "bold"))
+                        font=("Microsoft YaHei UI", 14, "bold"))
         style.configure("PanelMuted.TLabel", background=PANEL, foreground=MUTED,
-                        font=("Microsoft YaHei UI", 9, "bold"))
+                        font=("Microsoft YaHei UI", 9))
         style.configure("Muted.TLabel", foreground=MUTED,
-                        font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("TEntry", padding=8, fieldbackground=PANEL, foreground=TEXT)
-        style.configure("TCombobox", padding=7, fieldbackground=PANEL, foreground=TEXT,
+                        font=("Microsoft YaHei UI", 9))
+        style.configure("TEntry", padding=(10, 7), fieldbackground=PANEL, foreground=TEXT,
+                        borderwidth=1, relief="solid")
+        style.configure("TCombobox", padding=(10, 6), fieldbackground=PANEL, foreground=TEXT,
                         arrowcolor=MUTED)
         style.configure("Treeview", background=CARD, foreground=TEXT,
-                        fieldbackground=CARD, rowheight=46, borderwidth=0,
-                        font=("Microsoft YaHei UI", 10, "bold"))
+                        fieldbackground=CARD, rowheight=40, borderwidth=0,
+                        font=("Microsoft YaHei UI", 10))
         style.configure("Treeview.Heading", background="#f4f2ed", foreground="#57534e",
                         bordercolor=BORDER, relief="flat",
-                        font=("Microsoft YaHei UI", 10, "bold"), padding=(8, 11))
+                        font=("Microsoft YaHei UI", 10, "bold"), padding=(8, 8))
         style.map("Treeview", background=[("selected", "#f2dfd8")],
                   foreground=[("selected", TEXT)])
-        style.configure("TButton", padding=(12, 8), background=BLUE, foreground="white",
+        style.configure("TButton", padding=(13, 7), background=BLUE, foreground="white",
                         bordercolor=BLUE, relief="flat",
                         font=("Microsoft YaHei UI", 10, "bold"))
         style.map("TButton", background=[("active", "#b9684f")],
@@ -1632,7 +1808,7 @@ class App:
                         bordercolor=BLUE)
         style.configure("Success.TButton", background=BLUE, foreground="white",
                         bordercolor=BLUE)
-        style.configure("Icon.TButton", padding=(9, 7), background=BLUE,
+        style.configure("Icon.TButton", padding=(11, 7), background=BLUE,
                         foreground="white", bordercolor=BLUE)
         for button_style in ("Success.TButton", "Danger.TButton", "Purple.TButton", "Icon.TButton"):
             style.map(button_style, background=[("active", "#b9684f")],
@@ -1691,26 +1867,29 @@ class App:
         shell = tk.Frame(self.root, bg=BG)
         shell.pack(fill="both", expand=True)
 
-        sidebar = tk.Frame(shell, bg=SIDEBAR, width=176, highlightthickness=1,
+        sidebar = tk.Frame(shell, bg=SIDEBAR, width=164, highlightthickness=1,
                            highlightbackground=BORDER)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
         brand = tk.Frame(sidebar, bg=SIDEBAR)
-        brand.pack(fill="x", padx=18, pady=(22, 26))
+        brand.pack(fill="x", padx=16, pady=(16, 18))
         tk.Label(brand, text="C", bg=BLUE, fg="white", width=2, height=1,
-                 font=("Segoe UI", 15, "bold")).pack(side="left")
+                 font=("Segoe UI", 14, "bold")).pack(side="left")
         tk.Label(brand, text="  Chrome\n  Manager", bg=SIDEBAR, fg=TEXT,
-                 justify="left", font=("Microsoft YaHei UI", 11, "bold")).pack(side="left")
+                 justify="left", font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
 
         content = tk.Frame(shell, bg=BG)
         content.pack(side="left", fill="both", expand=True)
-        header = ttk.Frame(content, style="Panel.TFrame", padding=(24, 17))
+        header = ttk.Frame(content, style="Panel.TFrame", padding=(20, 11))
         header.pack(fill="x")
         left = ttk.Frame(header, style="Panel.TFrame")
-        left.pack(side="left")
-        ttk.Label(left, text="独立浏览器", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(left, text="管理本地独立 Chrome 环境，并允许自动化工具通过 CDP 精准控制",
-                  style="PanelMuted.TLabel").pack(anchor="w", pady=(3, 0))
+        left.pack(side="left", fill="x", expand=True)
+        ttk.Label(left, text="独立浏览器", style="Title.TLabel").pack(side="left")
+        ttk.Label(
+            left,
+            text="独立配置 · 固定 CDP 端口 · 本地数据",
+            style="PanelMuted.TLabel",
+        ).pack(side="left", padx=(14, 0), pady=(4, 0))
         self.summary = ttk.Label(header, text="", foreground=GREEN,
                                  background=PANEL, font=("Microsoft YaHei UI", 10, "bold"))
         right = ttk.Frame(header, style="Panel.TFrame")
@@ -1734,7 +1913,7 @@ class App:
         self.update_cloud_status()
 
         self.notebook = ttk.Notebook(content, style="Hidden.TNotebook")
-        self.notebook.pack(fill="both", expand=True, padx=22, pady=18)
+        self.notebook.pack(fill="both", expand=True, padx=16, pady=(12, 14))
         self.main_tab = ttk.Frame(self.notebook)
         self.password_tab = ttk.Frame(self.notebook)
         self.log_tab = ttk.Frame(self.notebook)
@@ -1754,13 +1933,13 @@ class App:
             button = tk.Button(
                 sidebar, text=text, anchor="w", relief="flat", borderwidth=0,
                 bg=SIDEBAR, fg=TEXT, activebackground=HOVER, activeforeground=TEXT,
-                font=("Microsoft YaHei UI", 11, "bold"), padx=22, pady=12,
+                font=("Microsoft YaHei UI", 10, "bold"), padx=20, pady=10,
                 command=lambda target=index: self.select_page(target),
             )
             button.pack(fill="x", padx=9, pady=2)
             self.nav_buttons.append(button)
-        tk.Label(sidebar, text=f"开发版  {APP_VERSION}", bg=SIDEBAR, fg=MUTED,
-                 font=("Microsoft YaHei UI", 8)).pack(side="bottom", pady=18)
+        tk.Label(sidebar, text=f"版本  {APP_VERSION}", bg=SIDEBAR, fg=MUTED,
+                 font=("Microsoft YaHei UI", 8)).pack(side="bottom", pady=14)
 
         self.build_main()
         self.build_passwords()
@@ -1776,7 +1955,7 @@ class App:
             button.configure(
                 bg="#e7e2d9" if active else SIDEBAR,
                 fg=BLUE if active else TEXT,
-                font=("Microsoft YaHei UI", 11, "bold"),
+                font=("Microsoft YaHei UI", 10, "bold"),
             )
         self.root.after_idle(self.reposition_page_buttons)
 
@@ -1795,7 +1974,7 @@ class App:
         self.status_filter_var = tk.StringVar(value="全部状态")
 
         filters = ttk.Frame(self.main_tab)
-        filters.pack(fill="x", pady=(0, 10))
+        filters.pack(fill="x", pady=(0, 7))
         self.group_filter = ttk.Combobox(
             filters, textvariable=self.group_filter_var, state="readonly", width=16
         )
@@ -1814,7 +1993,7 @@ class App:
                    style="Icon.TButton").pack(side="right")
 
         toolbar = ttk.Frame(self.main_tab)
-        toolbar.pack(fill="x", pady=(0, 12))
+        toolbar.pack(fill="x", pady=(0, 7))
         self.create_browser_button = ttk.Button(
             toolbar, text="＋ 新建浏览器", command=self.create,
             style="Primary.TButton",
@@ -1823,12 +2002,12 @@ class App:
         ttk.Button(toolbar, text="关闭选中", command=self.stop_selected,
                    style="Danger.TButton").pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="更多操作", command=self.more_menu).pack(side="left")
-        ttk.Button(toolbar, text="全部启动", command=self.start_all).pack(side="right")
         ttk.Label(
-            self.main_tab,
-            text="点击列表中的“启动”可打开对应浏览器；按 Ctrl 或 Shift 可多选。",
+            toolbar,
+            text="列表支持 Ctrl / Shift 多选",
             style="Muted.TLabel",
-        ).pack(anchor="w", pady=(0, 8))
+        ).pack(side="left", padx=(12, 0))
+        ttk.Button(toolbar, text="全部启动", command=self.start_all).pack(side="right")
 
         columns = (
             "name", "group", "port", "status", "pid", "tabs", "memory",
@@ -1845,7 +2024,7 @@ class App:
             "last_open": "上次打开时间", "home": "启动首页", "proxy": "代理配置",
         }
         widths = {
-            "name": 110, "group": 80, "port": 70, "status": 75, "pid": 70,
+            "name": 110, "group": 80, "port": 78, "status": 75, "pid": 78,
             "tabs": 55, "memory": 70, "last_open": 135,
             "home": 140, "proxy": 95, "action": 220,
         }
@@ -1903,7 +2082,7 @@ class App:
                 continue
             x, y, width, height = box
             button_group.place(
-                x=x + 5, y=y + 6, width=max(204, width - 10), height=max(32, height - 12)
+                x=x + 4, y=y + 5, width=max(204, width - 8), height=max(30, height - 10)
             )
 
     def start_row(self, key):
@@ -2076,7 +2255,7 @@ class App:
                 continue
             x, y, width, height = box
             button_group.place(
-                x=x + 5, y=y + 6, width=max(204, width - 10), height=max(32, height - 12)
+                x=x + 4, y=y + 5, width=max(204, width - 8), height=max(30, height - 10)
             )
 
     def open_vault_row(self, key):
@@ -2476,6 +2655,15 @@ class App:
         self.run_var = tk.BooleanVar(value=self.is_run_at_startup())
         ttk.Checkbutton(box, text="Windows 登录后自动启动管理器",
                         variable=self.run_var, command=self.toggle_run_startup).pack(anchor="w", pady=5)
+        self.auto_update_var = tk.BooleanVar(
+            value=self.settings.get("auto_check_updates", True)
+        )
+        ttk.Checkbutton(
+            box,
+            text="启动后自动检查软件新版本",
+            variable=self.auto_update_var,
+            command=self.save_settings,
+        ).pack(anchor="w", pady=5)
         row = ttk.Frame(box, style="Panel.TFrame")
         row.pack(fill="x", pady=12)
         ttk.Button(row, text="设置/修改密码", command=self.set_password).pack(side="left")
@@ -2483,6 +2671,15 @@ class App:
         ttk.Button(row, text="导出全部配置", command=self.export_config).pack(side="left", padx=6)
         ttk.Button(row, text="导入配置", command=self.import_config).pack(side="left", padx=6)
         ttk.Button(row, text="检查 Chrome 版本", command=self.chrome_version).pack(side="left", padx=6)
+        ttk.Button(
+            row, text="检查软件更新", command=self.check_app_update
+        ).pack(side="left", padx=6)
+        self.update_status_var = tk.StringVar(value="")
+        ttk.Label(
+            box,
+            textvariable=self.update_status_var,
+            style="PanelMuted.TLabel",
+        ).pack(anchor="w", pady=(0, 6))
         ttk.Label(box, text=f"版本：{APP_VERSION}\n数据目录：{ROOT}",
                   style="PanelMuted.TLabel").pack(anchor="w", pady=12)
 
@@ -3414,7 +3611,8 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
         if not self.is_cloud_read_only():
             menu.add_command(label="打开数据目录", command=self.open_profiles)
             menu.add_command(label="打开启动器目录", command=lambda: os.startfile(LAUNCHERS))
-        menu.add_command(label="在 Chrome 中检查更新", command=self.open_update)
+        menu.add_command(label="检查软件更新", command=self.check_app_update)
+        menu.add_command(label="检查 Chrome 更新", command=self.open_chrome_update)
         menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
 
     def copy_operation_instructions(self):
@@ -3467,10 +3665,226 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
             path.mkdir(parents=True, exist_ok=True)
             os.startfile(path)
 
-    def open_update(self):
+    def open_chrome_update(self):
         keys = self.selected(single=True)
         if keys:
             self.start_browser(self.map[keys[0]], "chrome://settings/help")
+
+    def auto_check_app_update(self):
+        last_value = self.settings.get("last_update_check", "")
+        if last_value:
+            try:
+                elapsed = datetime.now() - datetime.fromisoformat(last_value)
+                if elapsed.total_seconds() < 12 * 60 * 60:
+                    return
+            except ValueError:
+                pass
+        self.check_app_update(manual=False)
+
+    def check_app_update(self, manual=True):
+        if getattr(self, "update_checking", False):
+            if manual:
+                messagebox.showinfo("正在检查", "软件正在检查新版本，请稍候。")
+            return
+        self.update_checking = True
+        if hasattr(self, "update_status_var"):
+            self.update_status_var.set("正在检查软件新版本...")
+
+        def worker():
+            try:
+                release = latest_release_info()
+            except Exception as error:
+                message = str(error)
+                self.root.after(
+                    0,
+                    lambda: self.finish_update_check(
+                        manual=manual, error_message=message
+                    ),
+                )
+                return
+            self.root.after(
+                0,
+                lambda: self.finish_update_check(
+                    manual=manual, release=release
+                ),
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_update_check(self, manual, release=None, error_message=""):
+        self.update_checking = False
+        if error_message:
+            if hasattr(self, "update_status_var"):
+                self.update_status_var.set(error_message)
+            if manual:
+                messagebox.showerror("检查更新失败", error_message)
+            return
+        self.settings["last_update_check"] = datetime.now().isoformat(
+            timespec="seconds"
+        )
+        self.save_settings()
+        if version_tuple(release["version"]) <= version_tuple(APP_VERSION):
+            text = f"当前已是最新版本：{APP_VERSION}"
+            if hasattr(self, "update_status_var"):
+                self.update_status_var.set(text)
+            if manual:
+                messagebox.showinfo("没有新版本", text)
+            return
+        if hasattr(self, "update_status_var"):
+            self.update_status_var.set(
+                f"发现新版本：{release['version']}"
+            )
+        self.show_update_dialog(release)
+
+    def show_update_dialog(self, release):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("发现软件新版本")
+        dialog.geometry("720x540")
+        dialog.minsize(640, 460)
+        dialog.configure(bg=BG)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        if APP_ICON_FILE.exists():
+            try:
+                dialog.iconbitmap(default=str(APP_ICON_FILE))
+            except tk.TclError:
+                pass
+        panel = ttk.Frame(dialog, style="Panel.TFrame", padding=24)
+        panel.pack(fill="both", expand=True, padx=18, pady=18)
+        ttk.Label(
+            panel,
+            text=f"发现新版本 {release['version']}",
+            style="DialogTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            panel,
+            text=f"当前版本：{APP_VERSION}    安装包：{release['asset_name']}",
+            style="PanelMuted.TLabel",
+        ).pack(anchor="w", pady=(5, 14))
+        notes = tk.Text(
+            panel,
+            height=14,
+            wrap="word",
+            bg=CARD,
+            fg=TEXT,
+            relief="solid",
+            borderwidth=1,
+            font=("Microsoft YaHei UI", 10),
+            padx=12,
+            pady=10,
+        )
+        notes.pack(fill="both", expand=True)
+        notes.insert("1.0", release["notes"] or "该版本没有提供更新说明。")
+        notes.configure(state="disabled")
+        status_var = tk.StringVar(value="点击下方按钮即可在软件内下载并安装。")
+        ttk.Label(
+            panel,
+            textvariable=status_var,
+            style="PanelMuted.TLabel",
+        ).pack(anchor="w", pady=(12, 6))
+        progress = ttk.Progressbar(panel, mode="determinate", maximum=100)
+        progress.pack(fill="x", pady=(0, 12))
+        actions = ttk.Frame(panel, style="Panel.TFrame")
+        actions.pack(fill="x")
+        download_button = ttk.Button(
+            actions,
+            text="下载并安装",
+            command=lambda: self.download_app_update(
+                dialog, release, status_var, progress, download_button
+            ),
+        )
+        download_button.pack(side="left")
+        ttk.Button(
+            actions, text="稍后再说", command=dialog.destroy
+        ).pack(side="left", padx=8)
+        if release.get("page_url"):
+            ttk.Button(
+                actions,
+                text="查看发布说明",
+                command=lambda: os.startfile(release["page_url"]),
+            ).pack(side="right")
+        dialog.after_idle(lambda: center_window(dialog, self.root))
+
+    def download_app_update(
+        self, dialog, release, status_var, progress, download_button
+    ):
+        download_button.configure(state="disabled")
+        status_var.set("正在下载安装包...")
+
+        def update_progress(downloaded, total):
+            percent = downloaded * 100 / total if total else 0
+            def apply_progress():
+                if not dialog.winfo_exists():
+                    return
+                progress.configure(value=percent)
+                status_var.set(
+                    f"正在下载：{downloaded / 1024 / 1024:.1f} MB"
+                    + (
+                        f" / {total / 1024 / 1024:.1f} MB"
+                        if total else ""
+                    )
+                )
+
+            self.root.after(0, apply_progress)
+
+        def worker():
+            try:
+                installer, digest = download_release_installer(
+                    release, update_progress
+                )
+            except Exception as error:
+                message = str(error)
+                self.root.after(
+                    0,
+                    lambda: self.finish_update_download(
+                        dialog, status_var, progress, download_button,
+                        error_message=message,
+                    ),
+                )
+                return
+            self.root.after(
+                0,
+                lambda: self.finish_update_download(
+                    dialog, status_var, progress, download_button,
+                    installer=installer, digest=digest,
+                ),
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_update_download(
+        self, dialog, status_var, progress, download_button,
+        installer=None, digest="", error_message="",
+    ):
+        if not dialog.winfo_exists():
+            return
+        if error_message:
+            progress.configure(value=0)
+            status_var.set(error_message)
+            download_button.configure(state="normal")
+            messagebox.showerror("更新下载失败", error_message, parent=dialog)
+            return
+        progress.configure(value=100)
+        status_var.set(f"下载和 SHA256 校验完成：{digest[:16]}...")
+        if not messagebox.askyesno(
+            "开始安装更新",
+            "安装包已验证完成。程序将退出并启动覆盖安装，是否现在更新？",
+            parent=dialog,
+        ):
+            download_button.configure(state="normal", text="重新打开安装包")
+            download_button.configure(
+                command=lambda: os.startfile(installer)
+            )
+            return
+        subprocess.Popen(
+            [
+                str(installer),
+                "/SILENT",
+                "/CLOSEAPPLICATIONS",
+                "/RESTARTAPPLICATIONS",
+            ]
+        )
+        self.root.after(300, self.quit_app)
 
     def add_quick(self):
         name = simpledialog.askstring("新增快捷网址", "名称：")
@@ -3606,6 +4020,8 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
     def save_settings(self):
         if hasattr(self, "tray_var"):
             self.settings["minimize_to_tray"] = self.tray_var.get()
+        if hasattr(self, "auto_update_var"):
+            self.settings["auto_check_updates"] = self.auto_update_var.get()
         save_json(SETTINGS_FILE, self.settings)
 
     def startup_command(self):
@@ -3907,12 +4323,15 @@ if __name__ == "__main__":
         raise SystemExit(0)
     set_windows_app_id()
     ensure_app_icon()
+    enable_windows_dpi_awareness()
     root = tk.Tk()
     configure_dialog_parent(root)
-    try:
-        root.tk.call("tk", "scaling", 1.1)
-    except Exception:
-        pass
+    scaling = system_tk_scaling()
+    if scaling:
+        try:
+            root.tk.call("tk", "scaling", scaling)
+        except Exception:
+            pass
     app = App(root)
     root.after_idle(lambda: center_window(root))
     instance.start_listener(lambda: root.after(0, app.show_window))
