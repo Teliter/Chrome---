@@ -52,7 +52,7 @@ except ImportError:
     ImageTk = None
 
 
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.2.1"
 UPDATE_REPOSITORY = "Teliter/Chrome---"
 UPDATE_API_URL = (
     f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest"
@@ -1999,7 +1999,7 @@ class App:
             style="Primary.TButton",
         )
         self.create_browser_button.pack(side="left", padx=(0, 8))
-        ttk.Button(toolbar, text="关闭选中", command=self.stop_selected,
+        ttk.Button(toolbar, text="停止选中", command=self.stop_selected,
                    style="Danger.TButton").pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="更多操作", command=self.more_menu).pack(side="left")
         ttk.Label(
@@ -2092,6 +2092,13 @@ class App:
         self.tree.selection_set(key)
         self.start_browser(record)
         self.root.after(1200, self.refresh)
+
+    def stop_row(self, key):
+        record = self.map.get(key)
+        if not record or not cdp_alive(record["port"]):
+            return
+        self.tree.selection_set(key)
+        self.stop_selected()
 
     def edit_row(self, key):
         if key not in self.map:
@@ -4147,13 +4154,22 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
                 tags=("running" if is_cdp else "occupied" if is_open else "stopped",),
             )
             button_group = tk.Frame(self.tree, bg=CARD)
-            button_specs = [
-                (
-                    "已启动" if is_cdp else ("不可用" if is_open else "启动"),
-                    lambda browser_key=key: self.start_row(browser_key),
-                    "disabled" if is_open else "normal",
-                ),
-            ]
+            if is_cdp:
+                button_specs = [
+                    (
+                        "停止",
+                        lambda browser_key=key: self.stop_row(browser_key),
+                        "normal",
+                    ),
+                ]
+            else:
+                button_specs = [
+                    (
+                        "不可用" if is_open else "启动",
+                        lambda browser_key=key: self.start_row(browser_key),
+                        "disabled" if is_open else "normal",
+                    ),
+                ]
             if not self.is_cloud_read_only():
                 button_specs.extend(
                     [
@@ -4202,7 +4218,11 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
         draw.rounded_rectangle((8, 8, 56, 56), 10, fill=BLUE)
         draw.ellipse((20, 20, 44, 44), fill="white")
         menu = pystray.Menu(
-            pystray.MenuItem("显示管理器", lambda: self.root.after(0, self.show_window)),
+            pystray.MenuItem(
+                "显示管理器",
+                lambda: self.root.after(0, self.show_window),
+                default=True,
+            ),
             pystray.MenuItem("全部启动", lambda: self.root.after(0, self.start_all)),
             pystray.MenuItem("退出管理器", lambda: self.root.after(0, self.quit_app)),
         )
