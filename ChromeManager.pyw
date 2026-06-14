@@ -52,11 +52,12 @@ except ImportError:
     ImageTk = None
 
 
-APP_VERSION = "3.2.1"
+APP_VERSION = "3.2.2"
 UPDATE_REPOSITORY = "Teliter/Chrome---"
 UPDATE_API_URL = (
     f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest"
 )
+UPDATE_LATEST_URL = f"https://github.com/{UPDATE_REPOSITORY}/releases/latest"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ROOT = (
@@ -193,6 +194,54 @@ def version_tuple(value):
     return tuple((parts + [0, 0, 0])[:3])
 
 
+def latest_release_fallback(timeout=20):
+    request = urllib.request.Request(
+        UPDATE_LATEST_URL,
+        headers={"User-Agent": f"ChromeMultiManager/{APP_VERSION}"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        page_url = response.geturl()
+    tag = urllib.parse.unquote(
+        PurePosixPath(urllib.parse.urlparse(page_url).path).name
+    ).strip()
+    if not tag or tag == "latest":
+        raise RuntimeError("无法识别 GitHub 最新版本。")
+    version = tag.lstrip("vV")
+    asset_name = f"ChromeMultiManager-Setup-{version}.exe"
+    download_url = (
+        f"https://github.com/{UPDATE_REPOSITORY}/releases/download/"
+        f"{urllib.parse.quote(tag)}/{asset_name}"
+    )
+    digest = ""
+    try:
+        checksum_request = urllib.request.Request(
+            download_url + ".sha256",
+            headers={"User-Agent": f"ChromeMultiManager/{APP_VERSION}"},
+        )
+        with urllib.request.urlopen(
+            checksum_request, timeout=timeout
+        ) as checksum_response:
+            checksum = checksum_response.read().decode("ascii", "ignore").strip()
+        candidate = checksum.split()[0].lower()
+        if len(candidate) == 64 and all(
+            char in "0123456789abcdef" for char in candidate
+        ):
+            digest = "sha256:" + candidate
+    except Exception:
+        pass
+    return {
+        "version": version,
+        "tag": tag,
+        "name": tag,
+        "notes": "已通过 GitHub 备用通道检测到新版本。",
+        "page_url": page_url,
+        "asset_name": asset_name,
+        "download_url": download_url,
+        "size": 0,
+        "digest": digest,
+    }
+
+
 def latest_release_info(timeout=20):
     request = urllib.request.Request(
         UPDATE_API_URL,
@@ -206,7 +255,12 @@ def latest_release_info(timeout=20):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             release = json.loads(response.read().decode("utf-8"))
     except Exception as error:
-        raise RuntimeError(f"无法检查新版本：{error}") from error
+        try:
+            return latest_release_fallback(timeout=timeout)
+        except Exception as fallback_error:
+            raise RuntimeError(
+                f"无法检查新版本：{error}；备用通道：{fallback_error}"
+            ) from fallback_error
     tag = str(release.get("tag_name", "")).strip()
     asset = next(
         (
