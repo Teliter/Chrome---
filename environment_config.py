@@ -122,8 +122,11 @@ def build_chrome_arguments(environment):
         f"--window-size={int(env['window_width'])},{int(env['window_height'])}",
         f"--window-position={int(env['window_x'])},{int(env['window_y'])}",
         f"--lang={env['language']}",
-        f"--force-device-scale-factor={float(env['device_scale_factor'])}",
     ]
+    if float(env["device_scale_factor"]) > 0:
+        arguments.append(
+            f"--force-device-scale-factor={float(env['device_scale_factor'])}"
+        )
     if env["user_agent"]:
         arguments.append(f"--user-agent={env['user_agent']}")
     if env["touch_mode"] or env["mobile_mode"]:

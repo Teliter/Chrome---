@@ -52,7 +52,7 @@ except ImportError:
     ImageTk = None
 
 
-APP_VERSION = "3.2.2"
+APP_VERSION = "3.3.0"
 UPDATE_REPOSITORY = "Teliter/Chrome---"
 UPDATE_API_URL = (
     f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest"
@@ -126,6 +126,37 @@ def system_tk_scaling():
         except Exception:
             pass
     return None
+
+
+def system_display_info(window=None):
+    width = window.winfo_screenwidth() if window else 1280
+    height = window.winfo_screenheight() if window else 800
+    work_width, work_height = width, height
+    dpi = 96
+    if sys.platform == "win32":
+        try:
+            work = ctypes.wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(
+                0x0030, 0, ctypes.byref(work), 0
+            ):
+                work_width = work.right - work.left
+                work_height = work.bottom - work.top
+        except Exception:
+            pass
+        try:
+            dpi = int(ctypes.windll.user32.GetDpiForSystem()) or 96
+        except Exception:
+            pass
+    recommended_width = max(960, min(1600, int(work_width * 0.86)))
+    recommended_height = max(640, min(960, int(work_height * 0.84)))
+    return {
+        "work_width": work_width,
+        "work_height": work_height,
+        "dpi": dpi,
+        "scale_percent": round(dpi * 100 / 96),
+        "recommended_width": min(recommended_width, work_width),
+        "recommended_height": min(recommended_height, work_height),
+    }
 
 
 def center_window(window, parent=None):
@@ -852,21 +883,51 @@ DEVICE_PRESETS = {
         "user_agent": "", "window_width": 1600, "window_height": 900,
         "mobile_mode": False, "touch_mode": False, "device_scale_factor": 1.0,
     },
+    "Windows 桌面 · 紧凑窗口": {
+        "user_agent": "", "window_width": 1100, "window_height": 700,
+        "mobile_mode": False, "touch_mode": False, "device_scale_factor": 1.0,
+    },
+    "Windows 桌面 · 1536 宽屏": {
+        "user_agent": "", "window_width": 1536, "window_height": 864,
+        "mobile_mode": False, "touch_mode": False, "device_scale_factor": 1.0,
+    },
+    "Windows 桌面 · 1920 全高清": {
+        "user_agent": "", "window_width": 1920, "window_height": 1080,
+        "mobile_mode": False, "touch_mode": False, "device_scale_factor": 1.0,
+    },
 }
 
 
 class EnvironmentDialog(tk.Toplevel):
     def __init__(self, parent, environment=None):
         super().__init__(parent)
+        self.withdraw()
         self.result = None
         self.title("浏览器环境配置")
         self.configure(bg=BG)
         self.transient(parent)
-        self.grab_set()
-        self.geometry("780x720")
-        self.minsize(700, 600)
-        self.after_idle(lambda: center_window(self, parent))
+        display = system_display_info(parent)
+        dialog_width = min(780, max(700, display["work_width"] - 80))
+        dialog_height = min(720, max(600, display["work_height"] - 80))
+        self.geometry(f"{dialog_width}x{dialog_height}")
+        self.minsize(min(700, dialog_width), min(600, dialog_height))
         env = normalize_environment(environment)
+        current_device_name = (
+            f"当前电脑推荐 · {display['recommended_width']}×"
+            f"{display['recommended_height']} · 跟随系统 "
+            f"{display['scale_percent']}%"
+        )
+        self.device_presets = {
+            current_device_name: {
+                "user_agent": "",
+                "window_width": display["recommended_width"],
+                "window_height": display["recommended_height"],
+                "mobile_mode": False,
+                "touch_mode": False,
+                "device_scale_factor": 0.0,
+            },
+            **DEVICE_PRESETS,
+        }
 
         shell = tk.Frame(self, bg=BG, padx=16, pady=16)
         shell.pack(fill="both", expand=True)
@@ -1001,7 +1062,7 @@ class EnvironmentDialog(tk.Toplevel):
         self.device_preset = tk.StringVar(value="请选择设备")
         device_combo = ttk.Combobox(
             device_row, textvariable=self.device_preset,
-            values=tuple(DEVICE_PRESETS), state="readonly",
+            values=tuple(self.device_presets), state="readonly",
         )
         device_combo.pack(side="left", fill="x", expand=True)
         device_combo.bind("<<ComboboxSelected>>", self.apply_device_preset)
@@ -1047,9 +1108,18 @@ class EnvironmentDialog(tk.Toplevel):
             tabs["basic"], "窗口尺寸", "_window_size",
             f"{env['window_width']}x{env['window_height']}",
             (
+                (
+                    f"当前电脑推荐 · {display['recommended_width']} × "
+                    f"{display['recommended_height']}",
+                    f"{display['recommended_width']}x{display['recommended_height']}",
+                ),
+                ("1024 × 768（小屏）", "1024x768"),
+                ("1100 × 700（紧凑）", "1100x700"),
+                ("1280 × 720（宽屏）", "1280x720"),
                 ("1280 × 800（常用）", "1280x800"),
                 ("1366 × 768（笔记本）", "1366x768"),
                 ("1440 × 900（桌面）", "1440x900"),
+                ("1536 × 864（高分屏）", "1536x864"),
                 ("1600 × 900（宽屏）", "1600x900"),
                 ("1920 × 1080（全高清）", "1920x1080"),
             ),
@@ -1111,8 +1181,18 @@ class EnvironmentDialog(tk.Toplevel):
             tabs["basic"], "设备缩放比例", "device_scale_factor",
             str(env["device_scale_factor"]),
             (
-                ("100%（推荐）", "1.0"), ("125%（高分屏）", "1.25"),
-                ("150%（高分屏）", "1.5"), ("175%", "1.75"), ("200%", "2.0"),
+                (
+                    f"跟随当前电脑（系统 {display['scale_percent']}%，推荐）",
+                    "0.0",
+                ),
+                ("80%（显示更多内容）", "0.8"),
+                ("90%（稍小）", "0.9"),
+                ("100%（保留原有效果）", "1.0"),
+                ("110%（稍大）", "1.1"),
+                ("125%（高分屏）", "1.25"),
+                ("150%（高分屏）", "1.5"),
+                ("175%", "1.75"),
+                ("200%", "2.0"),
             ),
         )
 
@@ -1237,6 +1317,14 @@ class EnvironmentDialog(tk.Toplevel):
             wraplength=600,
             justify="left",
         ).pack(anchor="w", pady=12)
+        self.after_idle(lambda: self.show_centered(parent))
+
+    def show_centered(self, parent):
+        center_window(self, parent)
+        self.deiconify()
+        self.lift()
+        self.grab_set()
+        self.focus_force()
 
     def set_field_value(self, key, value):
         variable = self.vars.get(key)
@@ -1262,7 +1350,7 @@ class EnvironmentDialog(tk.Toplevel):
         self.set_field_value("geolocation_permission", True)
 
     def apply_device_preset(self, _event=None):
-        preset = DEVICE_PRESETS.get(self.device_preset.get())
+        preset = self.device_presets.get(self.device_preset.get())
         if not preset:
             return
         for key, value in preset.items():
@@ -1286,8 +1374,8 @@ class EnvironmentDialog(tk.Toplevel):
         )
         device_name = (
             selected_device
-            if selected_device in DEVICE_PRESETS
-            else random.choice(tuple(DEVICE_PRESETS))
+            if selected_device in self.device_presets
+            else random.choice(tuple(self.device_presets))
         )
         self.region_preset.set(region_name)
         self.device_preset.set(device_name)
@@ -1387,17 +1475,17 @@ class EnvironmentDialog(tk.Toplevel):
 class BrowserDialog(tk.Toplevel):
     def __init__(self, parent, title, record=None, default_port=9231):
         super().__init__(parent)
+        self.withdraw()
         self.result = None
         self.title(title)
         self.configure(bg=BG)
         self.transient(parent)
-        self.grab_set()
         self.resizable(True, True)
-        screen_h = self.winfo_screenheight()
-        height = min(700, max(540, screen_h - 120))
-        self.geometry(f"680x{height}")
-        self.minsize(620, 520)
-        self.after_idle(lambda: center_window(self, parent))
+        display = system_display_info(parent)
+        height = min(700, max(560, display["work_height"] - 100))
+        width = min(760, max(680, display["work_width"] - 120))
+        self.geometry(f"{width}x{height}")
+        self.minsize(650, 540)
 
         data = record or {}
         self.environment = normalize_environment(data.get("environment"))
@@ -1533,6 +1621,10 @@ class BrowserDialog(tk.Toplevel):
 
         def initialize_dialog():
             canvas.yview_moveto(0)
+            center_window(self, parent)
+            self.deiconify()
+            self.lift()
+            self.grab_set()
             first_entry.focus_set()
 
         self.after_idle(initialize_dialog)
@@ -1549,10 +1641,12 @@ class BrowserDialog(tk.Toplevel):
         user_agent = env["user_agent"] or "跟随 Chrome 默认值"
         if len(user_agent) > 48:
             user_agent = user_agent[:45] + "..."
+        scale = float(env["device_scale_factor"])
+        scale_text = "跟随系统缩放" if scale <= 0 else f"{scale * 100:g}%"
         self.environment_summary.config(
             text=(
                 f"{env['language']} · {env['timezone']} · "
-                f"{env['window_width']}×{env['window_height']}\n"
+                f"{env['window_width']}×{env['window_height']} · {scale_text}\n"
                 f"UA：{user_agent}"
             )
         )
@@ -1796,8 +1890,11 @@ class App:
 
     def configure_style(self):
         self.root.title(f"Chrome 多开管理器 {APP_VERSION}")
-        self.root.geometry("1380x800")
-        self.root.minsize(1080, 640)
+        display = system_display_info(self.root)
+        width = min(1380, max(1080, display["work_width"] - 40))
+        height = min(800, max(640, display["work_height"] - 40))
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(min(1080, width), min(640, height))
         self.root.configure(bg=BG)
         self.apply_window_icon()
         for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkTooltipFont"):
@@ -2078,15 +2175,21 @@ class App:
             "last_open": "上次打开时间", "home": "启动首页", "proxy": "代理配置",
         }
         widths = {
-            "name": 110, "group": 80, "port": 78, "status": 75, "pid": 78,
-            "tabs": 55, "memory": 70, "last_open": 135,
-            "home": 140, "proxy": 95, "action": 220,
+            "name": 105, "group": 70, "port": 75, "status": 75, "pid": 75,
+            "tabs": 58, "memory": 65, "last_open": 120,
+            "home": 120, "proxy": 105, "action": 210,
+        }
+        self.tree_min_widths = widths
+        self.tree_width_weights = {
+            "name": 1.1, "group": 0.7, "port": 0.7, "status": 0.75,
+            "pid": 0.7, "tabs": 0.55, "memory": 0.6, "last_open": 1.05,
+            "home": 1.25, "proxy": 1.15, "action": 1.45,
         }
         for column in columns:
             self.tree.heading(column, text=headers[column], anchor="center")
             self.tree.column(
                 column, width=widths[column], minwidth=widths[column],
-                anchor="center", stretch=column in ("home", "proxy"),
+                anchor="center", stretch=False,
             )
         vertical = ttk.Scrollbar(table, orient="vertical", command=self.on_tree_scroll)
         horizontal = ttk.Scrollbar(
@@ -2104,11 +2207,34 @@ class App:
         table.rowconfigure(0, weight=1)
         table.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", self.on_tree_double_click)
-        self.tree.bind("<Configure>", lambda _: self.position_action_buttons())
+        self.tree.bind("<Configure>", self.on_tree_configure)
         self.tree.bind("<MouseWheel>", lambda _: self.root.after_idle(self.position_action_buttons))
         self.tree.tag_configure("running", foreground=GREEN)
         self.tree.tag_configure("occupied", foreground=RED)
         self.action_buttons = {}
+
+    def on_tree_configure(self, _event=None):
+        pending = getattr(self, "tree_resize_job", None)
+        if pending:
+            self.root.after_cancel(pending)
+        self.tree_resize_job = self.root.after(60, self.resize_tree_columns)
+
+    def resize_tree_columns(self):
+        self.tree_resize_job = None
+        if not hasattr(self, "tree") or not self.tree.winfo_exists():
+            return
+        available = max(0, self.tree.winfo_width() - 4)
+        minimum_total = sum(self.tree_min_widths.values())
+        extra = max(0, available - minimum_total)
+        weight_total = sum(self.tree_width_weights.values())
+        for column in self.tree["columns"]:
+            width = self.tree_min_widths[column]
+            if extra:
+                width += round(
+                    extra * self.tree_width_weights[column] / weight_total
+                )
+            self.tree.column(column, width=width)
+        self.position_action_buttons()
 
     def on_tree_yview(self, first, last):
         self.tree_scrollbar.set(first, last)
@@ -2120,6 +2246,10 @@ class App:
 
     def on_tree_xview(self, first, last):
         self.tree_xscrollbar.set(first, last)
+        if float(first) <= 0 and float(last) >= 0.999:
+            self.tree_xscrollbar.grid_remove()
+        else:
+            self.tree_xscrollbar.grid()
         self.root.after_idle(self.position_action_buttons)
 
     def on_tree_xscroll(self, *args):
@@ -4335,6 +4465,14 @@ def self_test():
     arguments = build_chrome_arguments(environment)
     assert "--window-size=900,700" in arguments
     assert "--lang=en-US" in arguments
+    follow_system = normalize_environment({
+        "device_scale_factor": 0.0,
+    })
+    follow_arguments = build_chrome_arguments(follow_system)
+    assert not any(
+        argument.startswith("--force-device-scale-factor=")
+        for argument in follow_arguments
+    )
     assert consistency_report(environment)["warnings"]
     test_root = ROOT / ".selftest"
     shutil.rmtree(test_root, ignore_errors=True)
@@ -4399,6 +4537,7 @@ if __name__ == "__main__":
     ensure_app_icon()
     enable_windows_dpi_awareness()
     root = tk.Tk()
+    root.withdraw()
     configure_dialog_parent(root)
     scaling = system_tk_scaling()
     if scaling:
@@ -4407,6 +4546,10 @@ if __name__ == "__main__":
         except Exception:
             pass
     app = App(root)
-    root.after_idle(lambda: center_window(root))
-    instance.start_listener(lambda: root.after(0, app.show_window))
-    root.mainloop()
+    if root.winfo_exists():
+        root.update_idletasks()
+        center_window(root)
+        root.deiconify()
+        root.lift()
+        instance.start_listener(lambda: root.after(0, app.show_window))
+        root.mainloop()
