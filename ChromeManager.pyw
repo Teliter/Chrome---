@@ -52,7 +52,7 @@ except ImportError:
     ImageTk = None
 
 
-APP_VERSION = "3.3.0"
+APP_VERSION = "3.3.1"
 UPDATE_REPOSITORY = "Teliter/Chrome---"
 UPDATE_API_URL = (
     f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest"
@@ -3929,9 +3929,13 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
 
     def show_update_dialog(self, release):
         dialog = tk.Toplevel(self.root)
+        dialog.withdraw()
         dialog.title("发现软件新版本")
-        dialog.geometry("720x540")
-        dialog.minsize(640, 460)
+        display = system_display_info(self.root)
+        dialog_width = min(760, max(640, display["work_width"] - 80))
+        dialog_height = min(580, max(500, display["work_height"] - 80))
+        dialog.geometry(f"{dialog_width}x{dialog_height}")
+        dialog.minsize(min(640, dialog_width), min(500, dialog_height))
         dialog.configure(bg=BG)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -3975,26 +3979,51 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
         ).pack(anchor="w", pady=(12, 6))
         progress = ttk.Progressbar(panel, mode="determinate", maximum=100)
         progress.pack(fill="x", pady=(0, 12))
-        actions = ttk.Frame(panel, style="Panel.TFrame")
+        actions = tk.Frame(panel, bg=PANEL)
         actions.pack(fill="x")
-        download_button = ttk.Button(
+        button_options = {
+            "bg": BLUE,
+            "fg": "white",
+            "activebackground": "#b9684f",
+            "activeforeground": "white",
+            "relief": "flat",
+            "borderwidth": 0,
+            "highlightthickness": 0,
+            "font": ("Microsoft YaHei UI", 10, "bold"),
+            "padx": 18,
+            "pady": 9,
+            "cursor": "hand2",
+        }
+        download_button = tk.Button(
             actions,
             text="下载并安装",
             command=lambda: self.download_app_update(
                 dialog, release, status_var, progress, download_button
             ),
+            **button_options,
         )
         download_button.pack(side="left")
-        ttk.Button(
-            actions, text="稍后再说", command=dialog.destroy
+        tk.Button(
+            actions,
+            text="稍后再说",
+            command=dialog.destroy,
+            **button_options,
         ).pack(side="left", padx=8)
         if release.get("page_url"):
-            ttk.Button(
+            tk.Button(
                 actions,
                 text="查看发布说明",
                 command=lambda: os.startfile(release["page_url"]),
+                **button_options,
             ).pack(side="right")
-        dialog.after_idle(lambda: center_window(dialog, self.root))
+
+        def show_dialog():
+            center_window(dialog, self.root)
+            dialog.deiconify()
+            dialog.lift()
+            dialog.focus_force()
+
+        dialog.after_idle(show_dialog)
 
     def download_app_update(
         self, dialog, release, status_var, progress, download_button
