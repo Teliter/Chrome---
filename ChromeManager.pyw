@@ -56,7 +56,7 @@ except ImportError:
     ImageTk = None
 
 
-APP_VERSION = "3.3.1"
+APP_VERSION = "3.3.2"
 UPDATE_REPOSITORY = "Teliter/Chrome---"
 UPDATE_API_URL = (
     f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest"
