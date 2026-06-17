@@ -88,5 +88,9 @@ def download_snapshot(server, token):
     return request_json(server, "/api/sync", token=token, timeout=60)
 
 
+def account_status(server, token):
+    return request_json(server, "/api/me", token=token, timeout=20)
+
+
 def logout(server, token):
     return request_json(server, "/api/logout", method="POST", token=token)

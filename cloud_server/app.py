@@ -35,7 +35,7 @@ app = FastAPI(title="Chrome Manager Cloud", version="2.0.0")
 
 class Credentials(BaseModel):
     username: str = Field(min_length=3, max_length=32)
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(max_length=128)
 
 
 class Snapshot(BaseModel):
@@ -45,7 +45,7 @@ class Snapshot(BaseModel):
 
 
 class PasswordReset(BaseModel):
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(max_length=128)
 
 
 class MemberCreate(Credentials):
@@ -423,6 +423,7 @@ def health():
 
 
 @app.post("/api/register")
+@app.post("/api/portal/register")
 def register(credentials: Credentials):
     username = credentials.username.strip()
     if not USERNAME_PATTERN.fullmatch(username):
@@ -670,6 +671,19 @@ def assign_member_resources(
         }
         if not browser_keys <= valid_browsers or not vault_keys <= valid_vault:
             raise HTTPException(status_code=400, detail="授权资源不存在或已经失效。")
+        vault_browser_map = {
+            vault_resource_key(record): str(record.get("browser_key", "")).strip()
+            for record in resources.get("vault", [])
+        }
+        blocked_vault = [
+            key for key in vault_keys
+            if vault_browser_map.get(key) and vault_browser_map[key] not in browser_keys
+        ]
+        if blocked_vault:
+            raise HTTPException(
+                status_code=400,
+                detail="网站账号已绑定浏览器，请先勾选对应浏览器后再授权账号。",
+            )
         connection.execute(
             "DELETE FROM resource_assignments WHERE member_id=?", (member_id,)
         )

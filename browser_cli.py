@@ -15,6 +15,7 @@ from environment_config import (
     apply_profile_preferences,
     build_chrome_arguments,
     ensure_environment_controller,
+    environment_controller_port,
     extension_paths,
     normalize_environment,
     prepare_autofill_extension,
@@ -32,8 +33,103 @@ ROOT = (
 MAP_FILE = ROOT / "browser-map.json"
 VAULT_FILE = ROOT / "password-vault.json"
 PROFILES = ROOT / "profiles"
+WELCOME_FILE = ROOT / "ChromeManager-welcome.html"
+WELCOME_HOME_LABEL = "软件欢迎页"
+LOCK_PORT = 39231
 MAX_CDP_PORT = 25535
+PROXY_BRIDGE_FALLBACK_START = 56000
+PROXY_BRIDGE_FALLBACK_END = 60999
 PROFILES.mkdir(parents=True, exist_ok=True)
+
+
+def normalize_home_value(value):
+    value = str(value or "").strip()
+    if value == WELCOME_HOME_LABEL:
+        return ""
+    return "" if value.lower() == "about:blank" else value
+
+
+def ensure_welcome_page():
+    ROOT.mkdir(parents=True, exist_ok=True)
+    content = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chrome 多开管理器</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif;
+      background: #f7f6f2;
+      color: #2d2a26;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+    }
+    main {
+      width: min(760px, calc(100vw - 48px));
+      padding: 44px 48px;
+      background: #fff;
+      border: 1px solid #e5e1da;
+      box-shadow: 0 18px 50px rgba(45, 42, 38, 0.08);
+    }
+    h1 {
+      margin: 0 0 14px;
+      font-size: 30px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0;
+      color: #6f6960;
+      font-size: 15px;
+      line-height: 1.8;
+    }
+    ul {
+      margin: 28px 0 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 12px;
+    }
+    li {
+      padding: 12px 14px;
+      background: #fbfaf8;
+      border: 1px solid #eee9e2;
+      color: #3a352f;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Chrome 多开管理器</h1>
+    <p>欢迎使用本软件。这里会为每个浏览器保存独立资料、账号信息、代理与环境配置，方便你按不同用途启动和管理 Chrome。</p>
+    <ul>
+      <li>在“编辑浏览器”里可以为当前浏览器添加网站账号，并选择某个网站作为启动首页。</li>
+      <li>没有设置启动首页时，会默认打开这个欢迎页面。</li>
+      <li>密码管理中的账号可复制、打开网页并尝试填充，不会自动提交表单。</li>
+    </ul>
+  </main>
+</body>
+</html>
+"""
+    if not WELCOME_FILE.exists() or WELCOME_FILE.read_text(encoding="utf-8") != content:
+        WELCOME_FILE.write_text(content, encoding="utf-8")
+    return WELCOME_FILE
+
+
+def default_start_url():
+    return ensure_welcome_page().as_uri()
+
+
+def resolve_start_url(record, url=None):
+    home = normalize_home_value(record.get("home", ""))
+    return normalize_home_value(url) or home or default_start_url()
 
 
 def load_map():
@@ -93,9 +189,37 @@ def port_pid(port):
     )
 
 
-def stop_port_listener(port):
+def _process_cmdline(pid):
+    try:
+        return psutil.Process(pid).cmdline()
+    except (psutil.Error, OSError):
+        return []
+
+
+def _process_matches(pid, markers):
+    if not markers:
+        return True
+    haystack = "\n".join(str(part).lower() for part in _process_cmdline(pid))
+    return all(str(marker).lower() in haystack for marker in markers)
+
+
+def proxy_bridge_config_path(profile):
+    return Path(profile) / "proxy-bridge.json"
+
+
+def proxy_bridge_markers(config_path):
+    return ["proxy", str(config_path)]
+
+
+def environment_controller_markers(config_path):
+    return ["environment", str(config_path)]
+
+
+def stop_port_listener(port, markers=None):
     pid = port_pid(port)
     if not pid:
+        return
+    if not _process_matches(pid, markers):
         return
     try:
         process = psutil.Process(pid)
@@ -151,20 +275,60 @@ def parse_proxy(value):
     }
 
 
-def proxy_bridge_port(cdp_port):
-    return 30000 + int(cdp_port)
+def proxy_bridge_candidates(cdp_port):
+    cdp_port = int(cdp_port)
+    seen = set()
+
+    def add(port):
+        if 1024 <= port <= 65535 and port not in seen:
+            seen.add(port)
+            yield port
+
+    yield from add(30000 + cdp_port)
+    size = PROXY_BRIDGE_FALLBACK_END - PROXY_BRIDGE_FALLBACK_START + 1
+    start = PROXY_BRIDGE_FALLBACK_START + (cdp_port % size)
+    for offset in range(size):
+        port = PROXY_BRIDGE_FALLBACK_START + (
+            (start - PROXY_BRIDGE_FALLBACK_START + offset) % size
+        )
+        yield from add(port)
+
+
+def proxy_bridge_port(cdp_port, config_path=None):
+    markers = proxy_bridge_markers(config_path) if config_path else None
+    if config_path and Path(config_path).exists():
+        try:
+            saved_port = json.loads(
+                Path(config_path).read_text(encoding="utf-8-sig")
+            ).get("listen_port")
+            saved_port = int(saved_port)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            saved_port = None
+        if saved_port and saved_port != LOCK_PORT:
+            pid = port_pid(saved_port)
+            if not pid or _process_matches(pid, markers):
+                return saved_port
+    for candidate in proxy_bridge_candidates(cdp_port):
+        if candidate == LOCK_PORT:
+            continue
+        pid = port_pid(candidate)
+        if not pid or _process_matches(pid, markers):
+            return candidate
+    raise SystemExit("No available proxy bridge port")
 
 
 def ensure_proxy_bridge(profile, cdp_port, proxy):
-    listen_port = proxy_bridge_port(cdp_port)
-    config_path = profile / "proxy-bridge.json"
+    config_path = proxy_bridge_config_path(profile)
+    listen_port = proxy_bridge_port(cdp_port, config_path)
     config_path.write_text(
         json.dumps({
             "host": proxy["host"], "port": proxy["port"],
             "username": proxy["username"], "password": proxy["password"],
+            "listen_port": listen_port,
         }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    markers = proxy_bridge_markers(config_path)
     if not port_open(listen_port):
         if FROZEN:
             manager = Path(sys.executable).parent.parent / "ChromeManager.exe"
@@ -192,7 +356,7 @@ def ensure_proxy_bridge(profile, cdp_port, proxy):
         deadline = time.time() + 5
         while time.time() < deadline and not port_open(listen_port):
             time.sleep(0.05)
-    if not port_open(listen_port):
+    if not port_open(listen_port) or not _process_matches(port_pid(listen_port), markers):
         raise SystemExit("本地代理认证桥启动失败")
     return f"http://127.0.0.1:{listen_port}"
 
@@ -259,7 +423,7 @@ def command_add(data, args):
         "name": args.name,
         "group": args.group,
         "port": port,
-        "home": args.home,
+        "home": normalize_home_value(args.home),
         "proxy": args.proxy,
         "note": args.note,
         "schedule": "",
@@ -312,7 +476,7 @@ def command_start(data, args):
             )
         else:
             command.append(f"--proxy-server={proxy['server']}")
-    command.append(args.url or record.get("home") or "about:blank")
+    command.append(resolve_start_url(record, args.url))
     subprocess.Popen(command, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
     deadline = time.time() + 12
     while time.time() < deadline and not cdp_alive(record["port"]):
@@ -333,6 +497,7 @@ def command_start(data, args):
 def command_stop(data, args):
     _, record = find_record(data, args.browser)
     port = int(record["port"])
+    profile = safe_profile_path(record)
     pid = port_pid(port)
     if not pid:
         print("浏览器未运行")
@@ -347,8 +512,16 @@ def command_stop(data, args):
         process.wait(timeout=5)
     except psutil.TimeoutExpired:
         process.kill()
-    stop_port_listener(30000 + port)
-    stop_port_listener(40000 + port)
+    proxy_config_path = proxy_bridge_config_path(profile)
+    stop_port_listener(
+        proxy_bridge_port(port, proxy_config_path),
+        proxy_bridge_markers(proxy_config_path),
+    )
+    environment_config_path = profile / "environment-controller.json"
+    stop_port_listener(
+        environment_controller_port(port),
+        environment_controller_markers(environment_config_path),
+    )
     print(f"已关闭：{record['name']}，端口 {port}")
 
 
@@ -361,7 +534,7 @@ def main():
     add.add_argument("--name", required=True)
     add.add_argument("--port", type=int)
     add.add_argument("--group", default="默认分组")
-    add.add_argument("--home", default="about:blank")
+    add.add_argument("--home", default="")
     add.add_argument("--proxy", default="")
     add.add_argument("--note", default="")
 

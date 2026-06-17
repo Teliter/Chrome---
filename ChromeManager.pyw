@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.request
 import urllib.parse
+import webbrowser
 import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -23,8 +24,10 @@ import tkinter as tk
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 import psutil
+import websocket
 from cloud_client import (
     CloudError,
+    account_status as cloud_account_status,
     download_snapshot,
     login as cloud_login_request,
     logout as cloud_logout_request,
@@ -38,6 +41,7 @@ from environment_config import (
     build_chrome_arguments,
     consistency_report,
     ensure_environment_controller,
+    environment_controller_port,
     extension_paths,
     normalize_environment,
     prepare_autofill_extension,
@@ -74,9 +78,13 @@ BACKUPS = ROOT / "backups"
 LOG_FILE = ROOT / "manager.log"
 VAULT_FILE = ROOT / "password-vault.json"
 LEGACY_VAULT_FILE = ROOT / "password-vault.dat"
+WELCOME_FILE = ROOT / "ChromeManager-welcome.html"
+WELCOME_HOME_LABEL = "软件欢迎页"
 APP_ICON_FILE = RESOURCE_ROOT / "chrome-manager.ico"
 LOCK_PORT = 39231
 MAX_CDP_PORT = 25535
+PROXY_BRIDGE_FALLBACK_START = 56000
+PROXY_BRIDGE_FALLBACK_END = 60999
 
 BG = "#f7f6f2"
 PANEL = "#ffffff"
@@ -163,16 +171,135 @@ def center_window(window, parent=None):
     window.update_idletasks()
     width = max(window.winfo_width(), window.winfo_reqwidth())
     height = max(window.winfo_height(), window.winfo_reqheight())
+    work_left = 0
+    work_top = 0
+    work_right = window.winfo_screenwidth()
+    work_bottom = window.winfo_screenheight()
+    if sys.platform == "win32":
+        try:
+            work = ctypes.wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(
+                0x0030, 0, ctypes.byref(work), 0
+            ):
+                work_left, work_top = work.left, work.top
+                work_right, work_bottom = work.right, work.bottom
+        except Exception:
+            pass
     anchor = parent if parent and parent.winfo_exists() else None
     if anchor and anchor.winfo_viewable():
         x = anchor.winfo_rootx() + (anchor.winfo_width() - width) // 2
         y = anchor.winfo_rooty() + (anchor.winfo_height() - height) // 2
     else:
-        x = (window.winfo_screenwidth() - width) // 2
-        y = (window.winfo_screenheight() - height) // 2
-    x = max(0, min(x, window.winfo_screenwidth() - width))
-    y = max(0, min(y, window.winfo_screenheight() - height))
+        x = work_left + (work_right - work_left - width) // 2
+        y = work_top + (work_bottom - work_top - height) // 2
+    y -= min(90, max(36, height // 12))
+    bottom_margin = 56
+    top_margin = 18
+    x = max(work_left, min(x, max(work_left, work_right - width)))
+    y = max(
+        work_top + top_margin,
+        min(y, max(work_top + top_margin, work_bottom - height - bottom_margin)),
+    )
     window.geometry(f"+{x}+{y}")
+
+
+def normalize_home_value(value):
+    value = str(value or "").strip()
+    if value == WELCOME_HOME_LABEL:
+        return ""
+    return "" if value.lower() == "about:blank" else value
+
+
+def display_home_value(value):
+    return normalize_home_value(value) or WELCOME_HOME_LABEL
+
+
+def storage_home_value(value):
+    value = str(value or "").strip()
+    return "" if value == WELCOME_HOME_LABEL else normalize_home_value(value)
+
+
+def ensure_welcome_page():
+    ROOT.mkdir(parents=True, exist_ok=True)
+    content = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chrome 多开管理器</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif;
+      background: #f7f6f2;
+      color: #2d2a26;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+    }
+    main {
+      width: min(760px, calc(100vw - 48px));
+      padding: 44px 48px;
+      background: #fff;
+      border: 1px solid #e5e1da;
+      box-shadow: 0 18px 50px rgba(45, 42, 38, 0.08);
+    }
+    h1 {
+      margin: 0 0 14px;
+      font-size: 30px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0;
+      color: #6f6960;
+      font-size: 15px;
+      line-height: 1.8;
+    }
+    ul {
+      margin: 28px 0 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 12px;
+    }
+    li {
+      padding: 12px 14px;
+      background: #fbfaf8;
+      border: 1px solid #eee9e2;
+      color: #3a352f;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Chrome 多开管理器</h1>
+    <p>欢迎使用本软件。这里会为每个浏览器保存独立资料、账号信息、代理与环境配置，方便你按不同用途启动和管理 Chrome。</p>
+    <ul>
+      <li>在“编辑浏览器”里可以为当前浏览器添加网站账号，并选择某个网站作为启动首页。</li>
+      <li>没有设置启动首页时，会默认打开这个欢迎页面。</li>
+      <li>密码管理中的账号可复制、打开网页并尝试填充，不会自动提交表单。</li>
+    </ul>
+  </main>
+</body>
+</html>
+"""
+    if not WELCOME_FILE.exists() or WELCOME_FILE.read_text(encoding="utf-8") != content:
+        WELCOME_FILE.write_text(content, encoding="utf-8")
+    return WELCOME_FILE
+
+
+def default_start_url():
+    return ensure_welcome_page().as_uri()
+
+
+def resolve_start_url(record, url=None):
+    home = normalize_home_value(record.get("home", ""))
+    return normalize_home_value(url) or home or default_start_url()
 
 
 def configure_dialog_parent(root):
@@ -572,19 +699,83 @@ def test_proxy(value):
     }
 
 
-def proxy_bridge_port(cdp_port):
-    return 30000 + int(cdp_port)
+def proxy_bridge_config_path(profile):
+    return Path(profile) / "proxy-bridge.json"
+
+
+def _process_cmdline(pid):
+    try:
+        return psutil.Process(pid).cmdline()
+    except (psutil.Error, OSError):
+        return []
+
+
+def _process_matches(pid, markers):
+    if not markers:
+        return True
+    haystack = "\n".join(str(part).lower() for part in _process_cmdline(pid))
+    return all(str(marker).lower() in haystack for marker in markers)
+
+
+def proxy_bridge_markers(config_path):
+    return ["proxy", str(config_path)]
+
+
+def environment_controller_markers(config_path):
+    return ["environment", str(config_path)]
+
+
+def proxy_bridge_candidates(cdp_port):
+    cdp_port = int(cdp_port)
+    seen = set()
+
+    def add(port):
+        if 1024 <= port <= 65535 and port not in seen:
+            seen.add(port)
+            yield port
+
+    yield from add(30000 + cdp_port)
+    size = PROXY_BRIDGE_FALLBACK_END - PROXY_BRIDGE_FALLBACK_START + 1
+    start = PROXY_BRIDGE_FALLBACK_START + (cdp_port % size)
+    for offset in range(size):
+        port = PROXY_BRIDGE_FALLBACK_START + (
+            (start - PROXY_BRIDGE_FALLBACK_START + offset) % size
+        )
+        yield from add(port)
+
+
+def proxy_bridge_port(cdp_port, config_path=None):
+    markers = proxy_bridge_markers(config_path) if config_path else None
+    if config_path:
+        saved_port = load_json(config_path, {}).get("listen_port")
+        try:
+            saved_port = int(saved_port)
+        except (TypeError, ValueError):
+            saved_port = None
+        if saved_port and saved_port != LOCK_PORT:
+            pid = port_pid(saved_port)
+            if not pid or _process_matches(pid, markers):
+                return saved_port
+    for candidate in proxy_bridge_candidates(cdp_port):
+        if candidate == LOCK_PORT:
+            continue
+        pid = port_pid(candidate)
+        if not pid or _process_matches(pid, markers):
+            return candidate
+    raise RuntimeError("No available proxy bridge port")
 
 
 def ensure_proxy_bridge(profile, cdp_port, proxy):
-    listen_port = proxy_bridge_port(cdp_port)
-    config_path = profile / "proxy-bridge.json"
+    config_path = proxy_bridge_config_path(profile)
+    listen_port = proxy_bridge_port(cdp_port, config_path)
     save_json(config_path, {
         "host": proxy["host"],
         "port": proxy["port"],
         "username": proxy["username"],
         "password": proxy["password"],
+        "listen_port": listen_port,
     })
+    markers = proxy_bridge_markers(config_path)
     if not port_open(listen_port):
         if FROZEN:
             command = [
@@ -611,7 +802,7 @@ def ensure_proxy_bridge(profile, cdp_port, proxy):
         deadline = time.time() + 5
         while time.time() < deadline and not port_open(listen_port):
             time.sleep(0.05)
-    if not port_open(listen_port):
+    if not port_open(listen_port) or not _process_matches(port_pid(listen_port), markers):
         raise ValueError("本地代理认证桥启动失败。")
     return f"http://127.0.0.1:{listen_port}"
 
@@ -639,9 +830,11 @@ def listener_pid_map():
     return listeners
 
 
-def stop_port_listener(port):
+def stop_port_listener(port, markers=None):
     pid = port_pid(port)
     if not pid:
+        return
+    if not _process_matches(pid, markers):
         return
     try:
         process = psutil.Process(pid)
@@ -662,6 +855,141 @@ def cdp_alive(port):
             return bool(data.get("webSocketDebuggerUrl") or data.get("Browser"))
     except Exception:
         return False
+
+
+def cdp_json(port, path, timeout=1.0):
+    with urllib.request.urlopen(
+        f"http://127.0.0.1:{int(port)}{path}", timeout=timeout
+    ) as response:
+        return json.load(response)
+
+
+def cdp_open_tab(port, url):
+    quoted = urllib.parse.quote(url, safe="")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{int(port)}/json/new?{quoted}",
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:
+            return json.load(response)
+    except Exception:
+        return cdp_json(port, f"/json/new?{quoted}", timeout=2.0)
+
+
+def cdp_pages(port):
+    try:
+        pages = cdp_json(port, "/json/list", timeout=1.0)
+    except Exception:
+        return []
+    return [
+        page for page in pages
+        if page.get("type") == "page" and page.get("webSocketDebuggerUrl")
+    ]
+
+
+def send_cdp_command(connection, command_id, method, params=None):
+    payload = {"id": command_id, "method": method}
+    if params:
+        payload["params"] = params
+    connection.send(json.dumps(payload))
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        response = json.loads(connection.recv())
+        if response.get("id") == command_id:
+            return response
+    return {}
+
+
+def autofill_vault_script(username, password):
+    payload = json.dumps(
+        {"username": str(username), "password": str(password)},
+        ensure_ascii=False,
+    )
+    return f"""
+(() => {{
+  const entry = {payload};
+  const setValue = (element, value) => {{
+    if (!element) return false;
+    element.focus();
+    const setter = Object.getOwnPropertyDescriptor(
+      element instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype,
+      'value'
+    ).set;
+    setter.call(element, value);
+    element.dispatchEvent(new Event('input', {{bubbles: true}}));
+    element.dispatchEvent(new Event('change', {{bubbles: true}}));
+    return true;
+  }};
+  const visible = element => {{
+    if (!element || element.disabled || element.readOnly) return false;
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden';
+  }};
+  const fill = () => {{
+    const passwords = [...document.querySelectorAll('input[type="password"]')]
+      .filter(visible);
+    if (!passwords.length) return false;
+    const passwordInput = passwords[0];
+    const scope = passwordInput.form || passwordInput.closest('form') || document;
+    const usernames = [...scope.querySelectorAll(
+      'input[autocomplete="username"],input[type="email"],'
+      + 'input[name*="user" i],input[name*="email" i],input[name*="login" i],'
+      + 'input[id*="user" i],input[id*="email" i],input[type="text"],input:not([type])'
+    )].filter(input => input !== passwordInput && visible(input));
+    setValue(usernames[0], entry.username);
+    setValue(passwordInput, entry.password);
+    return true;
+  }};
+  if (fill()) return true;
+  let attempts = 0;
+  const timer = setInterval(() => {{
+    attempts += 1;
+    if (fill() || attempts >= 30) clearInterval(timer);
+  }}, 500);
+  return false;
+}})();
+""".strip()
+
+
+def apply_vault_autofill(port, page_url, username, password):
+    script = autofill_vault_script(username, password)
+    target = None
+    normalized = page_url.rstrip("/")
+    deadline = time.time() + 8
+    while time.time() < deadline and not target:
+        for page in cdp_pages(port):
+            url = str(page.get("url", "")).rstrip("/")
+            if url == normalized or url.startswith(normalized):
+                target = page
+                break
+        if not target:
+            time.sleep(0.25)
+    if not target:
+        pages = cdp_pages(port)
+        target = pages[0] if pages else None
+    if not target:
+        return False
+    connection = websocket.create_connection(
+        target["webSocketDebuggerUrl"],
+        timeout=3,
+        origin="http://127.0.0.1",
+        suppress_origin=True,
+    )
+    try:
+        send_cdp_command(connection, 1, "Runtime.evaluate", {
+            "expression": script,
+            "awaitPromise": True,
+        })
+        send_cdp_command(connection, 2, "Page.addScriptToEvaluateOnNewDocument", {
+            "source": script,
+        })
+        return True
+    finally:
+        connection.close()
 
 
 def browser_stats(port, pid=None):
@@ -1473,10 +1801,20 @@ class EnvironmentDialog(tk.Toplevel):
 
 
 class BrowserDialog(tk.Toplevel):
-    def __init__(self, parent, title, record=None, default_port=9231):
+    def __init__(
+        self,
+        parent,
+        title,
+        record=None,
+        default_port=9231,
+        browser_key="",
+        vault=None,
+    ):
         super().__init__(parent)
         self.withdraw()
         self.result = None
+        self.vault_result = None
+        self.browser_key = browser_key
         self.title(title)
         self.configure(bg=BG)
         self.transient(parent)
@@ -1489,6 +1827,11 @@ class BrowserDialog(tk.Toplevel):
 
         data = record or {}
         self.environment = normalize_environment(data.get("environment"))
+        self.account_records = [
+            item.copy()
+            for item in (vault or [])
+            if item.get("browser_key", "") == browser_key
+        ]
         shell = tk.Frame(self, bg=BG, padx=14, pady=14)
         shell.pack(fill="both", expand=True)
         card = tk.Frame(shell, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
@@ -1584,9 +1927,27 @@ class BrowserDialog(tk.Toplevel):
         add_field(
             "CDP 端口", "port", str(data.get("port", default_port)), 1, 0
         )
-        add_field(
-            "启动首页", "home", data.get("home", "about:blank"), 1, 1
+        home_field = ttk.Frame(self.form, style="Panel.TFrame")
+        home_field.grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            padx=(8, 0),
+            pady=(5, 3),
         )
+        ttk.Label(home_field, text="启动首页", background=PANEL).pack(
+            anchor="w", pady=(0, 4)
+        )
+        self.vars["home"] = tk.StringVar(
+            value=display_home_value(data.get("home", ""))
+        )
+        self.home_combo = ttk.Combobox(
+            home_field,
+            textvariable=self.vars["home"],
+            style="Filter.TCombobox",
+            values=self.home_choices(),
+        )
+        self.home_combo.pack(fill="x")
         add_field(
             "代理服务器（可留空）", "proxy", data.get("proxy", ""), 2, 0, 2
         )
@@ -1616,6 +1977,68 @@ class BrowserDialog(tk.Toplevel):
             text="管理器启动时自动打开此浏览器",
             variable=self.auto_start,
         ).grid(row=5, column=1, sticky="w", padx=(16, 0), pady=(30, 3))
+
+        account_box = ttk.Frame(self.form, style="Panel.TFrame")
+        account_box.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        self.form.rowconfigure(6, weight=1)
+        account_header = ttk.Frame(account_box, style="Panel.TFrame")
+        account_header.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            account_header,
+            text="网页账号",
+            background=PANEL,
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(side="left")
+        ttk.Button(
+            account_header,
+            text="新增网页账号",
+            style="Primary.TButton",
+            command=self.add_account,
+        ).pack(side="right", padx=(6, 0))
+        account_columns = ("site", "url", "username", "password", "note", "action")
+        self.account_tree = ttk.Treeview(
+            account_box,
+            columns=account_columns,
+            show="headings",
+            height=5,
+            selectmode="browse",
+        )
+        account_headers = {
+            "site": "网站", "url": "网址", "username": "账号",
+            "password": "密码", "note": "备注", "action": "操作",
+        }
+        account_widths = {
+            "site": 70, "url": 160, "username": 90,
+            "password": 105, "note": 70, "action": 180,
+        }
+        self.account_tree_min_widths = account_widths
+        self.account_tree_width_weights = {
+            "site": 0.5, "url": 1.8, "username": 0.85,
+            "password": 0.9, "note": 0.65, "action": 0.95,
+        }
+        for column in account_columns:
+            self.account_tree.heading(column, text=account_headers[column], anchor="center")
+            self.account_tree.column(
+                column,
+                width=account_widths[column],
+                minwidth=account_widths[column],
+                anchor="center",
+                stretch=False,
+            )
+        account_scroll = ttk.Scrollbar(
+            account_box, orient="vertical", command=self.on_account_tree_scroll
+        )
+        self.account_tree_scrollbar = account_scroll
+        self.account_tree.configure(yscrollcommand=self.on_account_tree_yview)
+        self.account_tree.pack(side="left", fill="both", expand=True)
+        account_scroll.pack(side="right", fill="y")
+        self.account_tree.bind("<Double-1>", lambda _: self.edit_account())
+        self.account_tree.bind("<Configure>", self.on_account_tree_configure)
+        self.account_tree.bind(
+            "<MouseWheel>", lambda _: self.after_idle(self.position_account_buttons)
+        )
+        self.account_action_buttons = {}
+        self.refresh_accounts()
         self.bind("<Control-Return>", lambda _: self.save())
         self.bind("<Escape>", lambda _: self.destroy())
 
@@ -1628,6 +2051,204 @@ class BrowserDialog(tk.Toplevel):
             first_entry.focus_set()
 
         self.after_idle(initialize_dialog)
+
+    def home_choices(self):
+        choices = [WELCOME_HOME_LABEL]
+        for record in self.account_records:
+            url = record.get("url", "").strip()
+            if url and url not in choices:
+                choices.append(url)
+        return choices
+
+    def refresh_home_choices(self):
+        if hasattr(self, "home_combo"):
+            self.home_combo.configure(values=self.home_choices())
+
+    def current_browser_options(self):
+        name = self.vars.get("name").get().strip() if self.vars.get("name") else ""
+        return {self.browser_key: {"name": name or "当前浏览器"}}
+
+    def refresh_accounts(self):
+        if not hasattr(self, "account_tree"):
+            return
+        for button_group in getattr(self, "account_action_buttons", {}).values():
+            button_group.destroy()
+        self.account_action_buttons = {}
+        self.account_tree.delete(*self.account_tree.get_children())
+        for index, record in enumerate(self.account_records):
+            key = str(index)
+            self.account_tree.insert(
+                "",
+                "end",
+                iid=key,
+                values=(
+                    record.get("site", ""),
+                    record.get("url", ""),
+                    record.get("username", ""),
+                    record.get("password", ""),
+                    record.get("note", ""),
+                    "",
+                ),
+            )
+            button_group = tk.Frame(self.account_tree, bg=CARD)
+            for text, command in (
+                ("编辑", lambda row=key: self.edit_account_row(row)),
+                ("启动页", lambda row=key: self.use_account_as_home_row(row)),
+                ("删除", lambda row=key: self.delete_account_row(row)),
+            ):
+                tk.Button(
+                    button_group,
+                    text=text,
+                    command=command,
+                    relief="flat",
+                    borderwidth=0,
+                    bg=BLUE,
+                    fg="white",
+                    activebackground="#b9684f",
+                    activeforeground="white",
+                    font=("Microsoft YaHei UI", 9, "bold"),
+                    cursor="hand2",
+                ).pack(side="left", fill="both", expand=True, padx=2)
+            self.account_action_buttons[key] = button_group
+        self.refresh_home_choices()
+        self.resize_account_tree_columns()
+        self.after_idle(self.position_account_buttons)
+
+    def on_account_tree_configure(self, _event=None):
+        pending = getattr(self, "account_tree_resize_job", None)
+        if pending:
+            self.after_cancel(pending)
+        self.account_tree_resize_job = self.after(60, self.resize_account_tree_columns)
+
+    def resize_account_tree_columns(self):
+        self.account_tree_resize_job = None
+        if not hasattr(self, "account_tree") or not self.account_tree.winfo_exists():
+            return
+        available = max(0, self.account_tree.winfo_width() - 4)
+        minimum_total = sum(self.account_tree_min_widths.values())
+        extra = max(0, available - minimum_total)
+        weight_total = sum(self.account_tree_width_weights.values())
+        for column in self.account_tree["columns"]:
+            width = self.account_tree_min_widths[column]
+            if extra:
+                width += round(
+                    extra * self.account_tree_width_weights[column] / weight_total
+                )
+            self.account_tree.column(column, width=width)
+        self.position_account_buttons()
+
+    def on_account_tree_yview(self, first, last):
+        self.account_tree_scrollbar.set(first, last)
+        self.after_idle(self.position_account_buttons)
+
+    def on_account_tree_scroll(self, *args):
+        self.account_tree.yview(*args)
+        self.after_idle(self.position_account_buttons)
+
+    def position_account_buttons(self):
+        if not hasattr(self, "account_action_buttons"):
+            return
+        for key, button_group in self.account_action_buttons.items():
+            box = self.account_tree.bbox(key, "action")
+            if not box:
+                button_group.place_forget()
+                continue
+            x, y, width, height = box
+            button_group.place(
+                x=x + 4,
+                y=y + 5,
+                width=max(168, width - 8),
+                height=max(30, height - 10),
+            )
+
+    def selected_account_index(self):
+        selected = self.account_tree.selection()
+        if not selected:
+            messagebox.showinfo("请选择账号", "请先选择一条网页账号。", parent=self)
+            return None
+        return int(selected[0])
+
+    def edit_account_dialog(self, record=None):
+        dialog = VaultDialog(
+            self,
+            self.current_browser_options(),
+            record,
+            fixed_browser_key=self.browser_key,
+        )
+        self.wait_window(dialog)
+        if not dialog.result:
+            return None
+        result = dialog.result
+        result["browser_key"] = self.browser_key
+        return result
+
+    def add_account(self):
+        result = self.edit_account_dialog()
+        if not result:
+            return
+        self.account_records.append(result)
+        self.refresh_accounts()
+
+    def select_account_row(self, key):
+        if not self.account_tree.exists(key):
+            return None
+        self.account_tree.selection_set(key)
+        return int(key)
+
+    def edit_account_row(self, key):
+        index = self.select_account_row(key)
+        if index is None:
+            return
+        self.edit_account_at(index)
+
+    def delete_account_row(self, key):
+        index = self.select_account_row(key)
+        if index is None:
+            return
+        self.delete_account(index)
+
+    def use_account_as_home_row(self, key):
+        index = self.select_account_row(key)
+        if index is None:
+            return
+        self.use_account_as_home(index)
+
+    def edit_account(self):
+        index = self.selected_account_index()
+        if index is None:
+            return
+        self.edit_account_at(index)
+
+    def edit_account_at(self, index):
+        result = self.edit_account_dialog(self.account_records[index])
+        if not result:
+            return
+        self.account_records[index] = result
+        self.refresh_accounts()
+
+    def delete_account(self, index=None):
+        if index is None:
+            index = self.selected_account_index()
+        if index is None:
+            return
+        site = self.account_records[index].get("site", "")
+        if not messagebox.askyesno("删除账号", f"确定删除 [{site}]？", parent=self):
+            return
+        removed = self.account_records.pop(index)
+        if self.vars["home"].get().strip() == removed.get("url", "").strip():
+            self.vars["home"].set(WELCOME_HOME_LABEL)
+        self.refresh_accounts()
+
+    def use_account_as_home(self, index=None):
+        if index is None:
+            index = self.selected_account_index()
+        if index is None:
+            return
+        url = self.account_records[index].get("url", "").strip()
+        if not url:
+            messagebox.showinfo("没有网址", "这条网页账号没有保存网址。", parent=self)
+            return
+        self.vars["home"].set(url)
 
     def edit_environment(self):
         dialog = EnvironmentDialog(self, self.environment)
@@ -1740,16 +2361,23 @@ class BrowserDialog(tk.Toplevel):
                 messagebox.showerror("时间格式错误", "定时启动请使用 HH:MM，例如 08:30。", parent=self)
                 return
         self.result = {key: variable.get().strip() for key, variable in self.vars.items()}
+        self.result["home"] = storage_home_value(self.result.get("home", ""))
         self.result["port"] = port
         self.result["auto_start"] = self.auto_start.get()
         self.result["environment"] = self.environment
+        self.vault_result = []
+        for account in self.account_records:
+            item = account.copy()
+            item["browser_key"] = self.browser_key
+            self.vault_result.append(item)
         self.destroy()
 
 
 class VaultDialog(tk.Toplevel):
-    def __init__(self, parent, browsers, record=None):
+    def __init__(self, parent, browsers, record=None, fixed_browser_key=None):
         super().__init__(parent)
         self.result = None
+        self.fixed_browser_key = fixed_browser_key
         self.title("账号信息")
         self.configure(bg=BG)
         self.transient(parent)
@@ -1821,15 +2449,24 @@ class VaultDialog(tk.Toplevel):
         ttk.Label(form, text="所属浏览器", background=PANEL).pack(anchor="w", pady=(8, 4))
         browser_values = ["未指定"] + [f"{key} · {item['name']}" for key, item in browsers.items()]
         current_key = data.get("browser_key", "")
+        if fixed_browser_key is not None:
+            current_key = fixed_browser_key
         current = next(
             (value for value in browser_values if value.startswith(f"{current_key} ·")),
             "未指定",
         )
         self.browser_var = tk.StringVar(value=current)
-        ttk.Combobox(
-            form, textvariable=self.browser_var, values=browser_values,
-            state="readonly",
-        ).pack(fill="x", ipady=4)
+        if fixed_browser_key is None:
+            ttk.Combobox(
+                form, textvariable=self.browser_var, values=browser_values,
+                state="readonly",
+            ).pack(fill="x", ipady=4)
+        else:
+            ttk.Entry(
+                form,
+                textvariable=self.browser_var,
+                state="readonly",
+            ).pack(fill="x", ipady=5)
 
         self.bind("<Escape>", lambda _: self.destroy())
         self.bind("<Control-Return>", lambda _: self.save())
@@ -1849,7 +2486,11 @@ class VaultDialog(tk.Toplevel):
         elif url == "https://":
             self.vars["url"].set("")
         browser_value = self.browser_var.get()
-        browser_key = "" if browser_value == "未指定" else browser_value.split(" · ", 1)[0]
+        browser_key = (
+            self.fixed_browser_key
+            if self.fixed_browser_key is not None
+            else "" if browser_value == "未指定" else browser_value.split(" · ", 1)[0]
+        )
         self.result = {key: value.get().strip() for key, value in self.vars.items()}
         self.result["browser_key"] = browser_key
         self.destroy()
@@ -1865,6 +2506,10 @@ class App:
             normalized = normalize_environment(current)
             if current != normalized:
                 record["environment"] = normalized
+                map_changed = True
+            home = normalize_home_value(record.get("home", ""))
+            if record.get("home", "") != home:
+                record["home"] = home
                 map_changed = True
         if map_changed:
             save_json(MAP_FILE, self.map)
@@ -1935,6 +2580,26 @@ class App:
                         borderwidth=1, relief="solid")
         style.configure("TCombobox", padding=(10, 6), fieldbackground=PANEL, foreground=TEXT,
                         arrowcolor=MUTED)
+        style.configure(
+            "Filter.TCombobox",
+            padding=(10, 6),
+            fieldbackground=PANEL,
+            background=PANEL,
+            foreground=TEXT,
+            arrowcolor=BLUE,
+            bordercolor=BORDER,
+            lightcolor=BORDER,
+            darkcolor=BORDER,
+        )
+        style.map(
+            "Filter.TCombobox",
+            fieldbackground=[("readonly", PANEL), ("focus", PANEL)],
+            background=[("readonly", PANEL), ("focus", PANEL)],
+            foreground=[("readonly", TEXT), ("focus", TEXT)],
+            selectbackground=[("readonly", PANEL), ("focus", PANEL)],
+            selectforeground=[("readonly", TEXT), ("focus", TEXT)],
+            arrowcolor=[("active", BLUE), ("readonly", BLUE)],
+        )
         style.configure("Treeview", background=CARD, foreground=TEXT,
                         fieldbackground=CARD, rowheight=40, borderwidth=0,
                         font=("Microsoft YaHei UI", 10))
@@ -2310,20 +2975,6 @@ class App:
         self.refresh()
 
     def build_passwords(self):
-        info = tk.Frame(
-            self.password_tab, bg="#f1ede5", highlightthickness=1,
-            highlightbackground=BORDER, padx=16, pady=12,
-        )
-        info.pack(fill="x", pady=(0, 12))
-        tk.Label(
-            info,
-            text="注意：账号与密码以明文保存在本机账号库。"
-                 "分配所属浏览器后，可在完全匹配的网站域名自动填写，但不会自动提交。"
-                 "请勿把用户数据或导出的 CSV 发给其他人。",
-            bg="#f1ede5", fg=TEXT, anchor="w",
-            font=("Microsoft YaHei UI", 9, "bold"),
-        ).pack(fill="x")
-
         actions = ttk.Frame(self.password_tab)
         actions.pack(fill="x", pady=(0, 10))
         self.vault_write_buttons = []
@@ -2333,8 +2984,6 @@ class App:
         }
         for text, command in (
             ("新增账号", self.add_vault_entry),
-            ("复制账号", self.copy_vault_username),
-            ("复制密码", self.copy_vault_password),
             ("导入 Chrome CSV", self.import_chrome_csv),
             ("导出完整 CSV", self.export_vault_csv),
             ("导出 Google CSV", self.export_google_csv),
@@ -2347,6 +2996,43 @@ class App:
             if text in write_actions:
                 self.vault_write_buttons.append(button)
 
+        filters = ttk.Frame(self.password_tab)
+        filters.pack(fill="x", pady=(0, 10))
+        self.vault_search_var = tk.StringVar()
+        self.vault_search_var.trace_add("write", lambda *_: self.refresh_vault())
+        self.vault_browser_filter_var = tk.StringVar(value="全部浏览器")
+        self.vault_count_var = tk.StringVar(value="")
+
+        ttk.Label(filters, text="搜索", style="Muted.TLabel").pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Entry(filters, textvariable=self.vault_search_var, width=28).pack(
+            side="left", padx=(0, 10), ipady=1
+        )
+        ttk.Label(filters, text="浏览器", style="Muted.TLabel").pack(
+            side="left", padx=(0, 6)
+        )
+        self.vault_browser_filter = ttk.Combobox(
+            filters,
+            textvariable=self.vault_browser_filter_var,
+            style="Filter.TCombobox",
+            state="readonly",
+            width=22,
+        )
+        self.vault_browser_filter.pack(side="left", padx=(0, 10), ipady=1)
+        self.vault_browser_filter.bind(
+            "<<ComboboxSelected>>", lambda _: self.refresh_vault()
+        )
+        ttk.Button(
+            filters,
+            text="清空筛选",
+            command=self.reset_vault_filters,
+            style="Primary.TButton",
+        ).pack(side="left", padx=(0, 10))
+        ttk.Label(filters, textvariable=self.vault_count_var, style="Muted.TLabel").pack(
+            side="right"
+        )
+
         columns = ("site", "url", "username", "password", "browser", "note", "action")
         vault_table = ttk.Frame(self.password_tab, style="Panel.TFrame")
         vault_table.pack(fill="both", expand=True)
@@ -2358,24 +3044,31 @@ class App:
             "browser": "所属浏览器", "note": "备注", "action": "操作",
         }
         widths = {
-            "site": 100, "url": 180, "username": 125, "password": 125,
-            "browser": 105, "note": 145, "action": 220,
+            "site": 110, "url": 210, "username": 130, "password": 110,
+            "browser": 120, "note": 130, "action": 360,
+        }
+        self.vault_tree_min_widths = widths
+        self.vault_tree_width_weights = {
+            "site": 0.85, "url": 1.6, "username": 1.0, "password": 0.65,
+            "browser": 0.9, "note": 1.1, "action": 1.75,
         }
         for column in columns:
             self.vault_tree.heading(column, text=headers[column], anchor="center")
             self.vault_tree.column(
                 column, width=widths[column], anchor="center",
-                stretch=column in ("url", "note"), minwidth=widths[column],
+                stretch=False, minwidth=widths[column],
             )
         vault_vertical = ttk.Scrollbar(
-            vault_table, orient="vertical", command=self.vault_tree.yview
+            vault_table, orient="vertical", command=self.on_vault_tree_scroll
         )
         vault_horizontal = ttk.Scrollbar(
-            vault_table, orient="horizontal", command=self.vault_tree.xview
+            vault_table, orient="horizontal", command=self.on_vault_tree_xscroll
         )
+        self.vault_tree_scrollbar = vault_vertical
+        self.vault_tree_xscrollbar = vault_horizontal
         self.vault_tree.configure(
-            yscrollcommand=vault_vertical.set,
-            xscrollcommand=vault_horizontal.set,
+            yscrollcommand=self.on_vault_tree_yview,
+            xscrollcommand=self.on_vault_tree_xview,
         )
         self.vault_tree.grid(row=0, column=0, sticky="nsew")
         vault_vertical.grid(row=0, column=1, sticky="ns")
@@ -2383,12 +3076,97 @@ class App:
         vault_table.rowconfigure(0, weight=1)
         vault_table.columnconfigure(0, weight=1)
         self.vault_tree.bind("<Double-1>", lambda _: self.edit_vault_entry())
-        self.vault_tree.bind("<Configure>", lambda _: self.position_vault_buttons())
+        self.vault_tree.bind("<Configure>", self.on_vault_tree_configure)
         self.vault_tree.bind(
             "<MouseWheel>", lambda _: self.root.after_idle(self.position_vault_buttons)
         )
         self.vault_action_buttons = {}
         self.refresh_vault()
+
+    def on_vault_tree_configure(self, _event=None):
+        pending = getattr(self, "vault_tree_resize_job", None)
+        if pending:
+            self.root.after_cancel(pending)
+        self.vault_tree_resize_job = self.root.after(60, self.resize_vault_tree_columns)
+
+    def resize_vault_tree_columns(self):
+        self.vault_tree_resize_job = None
+        if not hasattr(self, "vault_tree") or not self.vault_tree.winfo_exists():
+            return
+        available = max(0, self.vault_tree.winfo_width() - 4)
+        minimum_total = sum(self.vault_tree_min_widths.values())
+        extra = max(0, available - minimum_total)
+        weight_total = sum(self.vault_tree_width_weights.values())
+        for column in self.vault_tree["columns"]:
+            width = self.vault_tree_min_widths[column]
+            if extra:
+                width += round(
+                    extra * self.vault_tree_width_weights[column] / weight_total
+                )
+            self.vault_tree.column(column, width=width)
+        self.position_vault_buttons()
+
+    def on_vault_tree_yview(self, first, last):
+        self.vault_tree_scrollbar.set(first, last)
+        self.root.after_idle(self.position_vault_buttons)
+
+    def on_vault_tree_scroll(self, *args):
+        self.vault_tree.yview(*args)
+        self.root.after_idle(self.position_vault_buttons)
+
+    def on_vault_tree_xview(self, first, last):
+        self.vault_tree_xscrollbar.set(first, last)
+        if float(first) <= 0 and float(last) >= 0.999:
+            self.vault_tree_xscrollbar.grid_remove()
+        else:
+            self.vault_tree_xscrollbar.grid()
+        self.root.after_idle(self.position_vault_buttons)
+
+    def on_vault_tree_xscroll(self, *args):
+        self.vault_tree.xview(*args)
+        self.root.after_idle(self.position_vault_buttons)
+
+    def reset_vault_filters(self):
+        self.vault_search_var.set("")
+        self.vault_browser_filter_var.set("全部浏览器")
+        self.refresh_vault()
+
+    def refresh_vault_browser_filter_values(self):
+        if not hasattr(self, "vault_browser_filter"):
+            return
+        current = self.vault_browser_filter_var.get() or "全部浏览器"
+        values = ["全部浏览器", "未指定"] + [
+            f"{key} · {record.get('name', key)}"
+            for key, record in self.map.items()
+        ]
+        self.vault_browser_filter.configure(values=values)
+        if current not in values:
+            self.vault_browser_filter_var.set("全部浏览器")
+
+    def vault_record_matches_filters(self, record, browser_name):
+        browser_filter = self.vault_browser_filter_var.get()
+        if browser_filter == "未指定" and record.get("browser_key"):
+            return False
+        if (
+            browser_filter
+            and browser_filter not in ("全部浏览器", "未指定")
+            and record.get("browser_key") != browser_filter.split(" · ", 1)[0]
+        ):
+            return False
+        query = self.vault_search_var.get().strip().lower()
+        if not query:
+            return True
+        haystack = " ".join(
+            str(value).lower()
+            for value in (
+                record.get("site", ""),
+                record.get("url", ""),
+                record.get("username", ""),
+                browser_name,
+                record.get("note", ""),
+            )
+        )
+        return query in haystack
 
     def selected_vault_index(self):
         selected = self.vault_tree.selection()
@@ -2400,12 +3178,17 @@ class App:
     def refresh_vault(self):
         if not hasattr(self, "vault_tree"):
             return
+        self.refresh_vault_browser_filter_values()
         for button_group in getattr(self, "vault_action_buttons", {}).values():
             button_group.destroy()
         self.vault_action_buttons = {}
         self.vault_tree.delete(*self.vault_tree.get_children())
+        visible_count = 0
         for index, record in enumerate(self.vault):
             browser = self.map.get(record.get("browser_key", ""), {}).get("name", "未指定")
+            if not self.vault_record_matches_filters(record, browser):
+                continue
+            visible_count += 1
             key = str(index)
             self.vault_tree.insert(
                 "", "end", iid=key,
@@ -2417,7 +3200,9 @@ class App:
             )
             button_group = tk.Frame(self.vault_tree, bg=CARD)
             button_specs = [
-                ("打开", lambda row=key: self.open_vault_row(row)),
+                ("复制账号", lambda row=key: self.copy_vault_row_value(row, "username", "账号")),
+                ("复制密码", lambda row=key: self.copy_vault_row_value(row, "password", "密码")),
+                ("打开并填充", lambda row=key: self.open_vault_row(row)),
             ]
             if not self.is_cloud_read_only():
                 button_specs.extend(
@@ -2434,6 +3219,9 @@ class App:
                     font=("Microsoft YaHei UI", 9, "bold"), cursor="hand2",
                 ).pack(side="left", fill="both", expand=True, padx=2)
             self.vault_action_buttons[key] = button_group
+        if hasattr(self, "vault_count_var"):
+            self.vault_count_var.set(f"显示 {visible_count} / {len(self.vault)} 条")
+        self.resize_vault_tree_columns()
         self.root.after_idle(self.position_vault_buttons)
 
     def position_vault_buttons(self):
@@ -2446,7 +3234,7 @@ class App:
                 continue
             x, y, width, height = box
             button_group.place(
-                x=x + 4, y=y + 5, width=max(204, width - 8), height=max(30, height - 10)
+                x=x + 4, y=y + 5, width=max(340, width - 8), height=max(30, height - 10)
             )
 
     def open_vault_row(self, key):
@@ -2466,6 +3254,19 @@ class App:
             return
         self.vault_tree.selection_set(key)
         self.delete_vault_entry()
+
+    def copy_vault_row_value(self, key, field, label):
+        if not self.vault_tree.exists(key):
+            return
+        self.vault_tree.selection_set(key)
+        index = int(key)
+        value = self.vault[index].get(field, "")
+        if not value:
+            messagebox.showinfo("没有内容", f"这条记录没有保存{label}。")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(value)
+        messagebox.showinfo("已复制", f"{label}已复制到剪贴板。")
 
     def add_vault_entry(self):
         if not self.require_cloud_write():
@@ -2534,8 +3335,26 @@ class App:
             messagebox.showerror("网址格式错误", str(error))
             return
         browser = self.map.get(record.get("browser_key", ""))
+        username = record.get("username", "")
+        password = record.get("password", "")
         if browser:
-            self.start_browser(browser, url)
+            was_running = cdp_alive(browser["port"])
+            if was_running:
+                try:
+                    cdp_open_tab(browser["port"], url)
+                except Exception:
+                    self.start_browser(browser, url)
+            else:
+                self.start_browser(browser, url)
+            if username or password:
+                def fill_later():
+                    try:
+                        apply_vault_autofill(
+                            browser["port"], url, username, password
+                        )
+                    except Exception as error:
+                        log(f"账号自动填充失败：{record.get('site', '')}，{error}")
+                threading.Thread(target=fill_later, daemon=True).start()
         else:
             os.startfile(url)
 
@@ -2709,8 +3528,8 @@ class App:
         dialog = tk.Toplevel(self.root)
         self.cloud_dialog = dialog
         dialog.title("云端账号")
-        dialog.geometry("760x440")
-        dialog.minsize(680, 400)
+        dialog.geometry("820x520")
+        dialog.minsize(740, 460)
         dialog.configure(bg=BG)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -2775,6 +3594,10 @@ class App:
         if logged_in:
             role = self.settings.get("cloud_role", "owner")
             role_text = "只读子账号" if role == "member" else "主账号"
+            owner = self.settings.get("cloud_owner_username", "")
+            browser_count = self.settings.get("cloud_browser_count", "")
+            vault_count = self.settings.get("cloud_vault_count", "")
+            updated_at = self.settings.get("cloud_updated_at", "")
             account = ttk.Frame(box, style="Panel.TFrame")
             account.pack(fill="x", pady=(4, 16))
             ttk.Label(
@@ -2789,6 +3612,21 @@ class App:
                 background=PANEL,
                 font=("Microsoft YaHei UI", 11, "bold"),
             ).pack(side="left")
+            detail_parts = []
+            if owner and owner != self.settings["cloud_username"]:
+                detail_parts.append(f"主账号：{owner}")
+            if browser_count != "":
+                detail_parts.append(f"浏览器：{browser_count}")
+            if vault_count != "":
+                detail_parts.append(f"网站账号：{vault_count}")
+            if updated_at:
+                detail_parts.append(f"最近同步：{updated_at}")
+            if detail_parts:
+                ttk.Label(
+                    box,
+                    text=" · ".join(str(part) for part in detail_parts),
+                    style="PanelMuted.TLabel",
+                ).pack(anchor="w", pady=(0, 8))
             actions = ttk.Frame(box, style="Panel.TFrame")
             actions.pack(fill="x", pady=(10, 8))
             if role != "member":
@@ -2798,6 +3636,12 @@ class App:
             ttk.Button(actions, text="拉取同步", command=self.cloud_download).pack(
                 side="left", padx=7
             )
+            ttk.Button(
+                actions, text="刷新状态", command=self.cloud_refresh_status
+            ).pack(side="left", padx=7)
+            ttk.Button(
+                actions, text="打开网页控制台", command=self.open_cloud_console
+            ).pack(side="left", padx=7)
             ttk.Button(actions, text="退出登录", command=self.cloud_logout).pack(
                 side="left", padx=7
             )
@@ -2826,6 +3670,9 @@ class App:
             ttk.Button(actions, text="登录", command=self.cloud_login).pack(
                 side="left", padx=7
             )
+            ttk.Button(
+                actions, text="打开网页控制台", command=self.open_cloud_console
+            ).pack(side="left", padx=7)
         ttk.Label(
             box,
             textvariable=self.cloud_status_var,
@@ -2888,6 +3735,48 @@ class App:
         if hasattr(self, "cloud_account_var"):
             self.cloud_account_var.set(username if token and username else "云端账号")
 
+    def open_cloud_console(self):
+        try:
+            server = normalize_server_url(
+                self.cloud_server_var.get()
+                or self.settings.get("cloud_server", "")
+            )
+        except CloudError as error:
+            messagebox.showerror("无法打开网页控制台", str(error))
+            return
+        webbrowser.open(f"{server}/dashboard")
+
+    def cloud_refresh_status(self):
+        try:
+            server, token = self.cloud_connection()
+        except CloudError as error:
+            messagebox.showerror("无法刷新", str(error))
+            return
+
+        def finished(result):
+            self.settings["cloud_role"] = result.get(
+                "role", self.settings.get("cloud_role", "owner")
+            )
+            self.settings["cloud_owner_username"] = result.get(
+                "owner_username", self.settings.get("cloud_owner_username", "")
+            )
+            self.settings["cloud_browser_count"] = result.get("browser_count", "")
+            self.settings["cloud_vault_count"] = result.get("vault_count", "")
+            self.settings["cloud_updated_at"] = result.get("updated_at", "")
+            self.save_settings()
+            self.update_access_controls()
+            self.render_cloud_account()
+            self.update_cloud_status(
+                f"状态已刷新：{result.get('browser_count', 0)} 个浏览器，"
+                f"{result.get('vault_count', 0)} 条网站账号"
+            )
+
+        self.run_cloud_task(
+            "正在刷新云端账号状态...",
+            lambda: cloud_account_status(server, token),
+            finished,
+        )
+
     def is_cloud_read_only(self):
         return bool(
             self.settings.get("cloud_token")
@@ -2916,8 +3805,6 @@ class App:
         password = self.cloud_password_var.get()
         if len(username) < 3:
             raise CloudError("用户名至少需要 3 个字符。")
-        if len(password) < 8:
-            raise CloudError("密码至少需要 8 个字符。")
         return server, username, password
 
     def run_cloud_task(self, status, worker, success):
@@ -2995,7 +3882,8 @@ class App:
     def syncable_settings(self):
         excluded = {
             "password_hash", "cloud_server", "cloud_username", "cloud_token",
-            "cloud_role", "cloud_owner_username",
+            "cloud_role", "cloud_owner_username", "cloud_browser_count",
+            "cloud_vault_count", "cloud_updated_at",
         }
         return {
             key: value for key, value in self.settings.items() if key not in excluded
@@ -3015,11 +3903,15 @@ class App:
 
         def finished(result):
             self.settings["cloud_server"] = server
+            self.settings["cloud_browser_count"] = result.get("browser_count", "")
+            self.settings["cloud_vault_count"] = result.get("vault_count", "")
+            self.settings["cloud_updated_at"] = result.get("updated_at", "")
             self.save_settings()
             self.update_cloud_status(
                 f"上传完成：{result['browser_count']} 个浏览器，"
                 f"{result['vault_count']} 条网站账号；{result['updated_at']}"
             )
+            self.render_cloud_account()
             messagebox.showinfo("同步完成", "本地数据已加密上传到服务器。")
 
         self.run_cloud_task(
@@ -3046,6 +3938,7 @@ class App:
                 raise CloudError(f"云端浏览器端口无效或重复：{port}")
             used_ports.add(port)
             record["port"] = port
+            record["home"] = normalize_home_value(record.get("home", ""))
             record["environment"] = normalize_environment(record.get("environment"))
             safe_profile_path(record)
         return browsers, settings, vault
@@ -3092,6 +3985,9 @@ class App:
                     "owner_username", ""
                 )
             self.vault = vault
+            self.settings["cloud_browser_count"] = len(self.map)
+            self.settings["cloud_vault_count"] = len(self.vault)
+            self.settings["cloud_updated_at"] = result.get("updated_at", "")
             for record in self.map.values():
                 self.profile_path(record).mkdir(parents=True, exist_ok=True)
             self.save_map()
@@ -3101,6 +3997,7 @@ class App:
             self.refresh()
             self.refresh_vault()
             self.update_cloud_status(f"拉取完成：{result.get('updated_at') or '云端暂无时间'}")
+            self.render_cloud_account()
             messagebox.showinfo("同步完成", "云端数据已保存到本机。")
 
         self.run_cloud_task(
@@ -3115,6 +4012,9 @@ class App:
         self.settings["cloud_token"] = ""
         self.settings["cloud_role"] = ""
         self.settings["cloud_owner_username"] = ""
+        self.settings["cloud_browser_count"] = ""
+        self.settings["cloud_vault_count"] = ""
+        self.settings["cloud_updated_at"] = ""
         self.cloud_password_var.set("")
         self.save_settings()
         self.update_cloud_status()
@@ -3200,6 +4100,10 @@ class App:
             if current != normalized:
                 record["environment"] = normalized
                 changed = True
+            home = normalize_home_value(record.get("home", ""))
+            if record.get("home", "") != home:
+                record["home"] = home
+                changed = True
         self.map = incoming
         if changed:
             self.save_map()
@@ -3234,20 +4138,45 @@ class App:
             )
         launcher.write_text(content, encoding="utf-8-sig")
 
+    def replace_browser_vault(self, browser_key, accounts):
+        if not browser_key:
+            return
+        kept = [
+            record
+            for record in self.vault
+            if record.get("browser_key", "") != browser_key
+        ]
+        linked = []
+        for account in accounts or []:
+            item = account.copy()
+            item["browser_key"] = browser_key
+            linked.append(item)
+        self.vault = kept + linked
+        save_vault(self.vault)
+        if hasattr(self, "vault_tree"):
+            self.refresh_vault()
+
     def create(self):
         if not self.require_cloud_write():
             return
         index = self.next_index()
-        dialog = BrowserDialog(self.root, "新建独立浏览器", default_port=self.next_port())
+        key = f"browser{index}"
+        dialog = BrowserDialog(
+            self.root,
+            "新建独立浏览器",
+            default_port=self.next_port(),
+            browser_key=key,
+            vault=self.vault,
+        )
         self.root.wait_window(dialog)
         if not dialog.result or self.port_conflict(dialog.result["port"]):
             return
-        key = f"browser{index}"
         record = dialog.result
         record["profile"] = f"profiles/browser-{index}"
         record["created_at"] = datetime.now().isoformat(timespec="seconds")
         self.profile_path(record).mkdir(parents=True, exist_ok=True)
         self.map[key] = record
+        self.replace_browser_vault(key, dialog.vault_result or [])
         self.save_map()
         self.write_launcher(key, record)
         log(f"创建浏览器：{record['name']}，端口 {record['port']}")
@@ -3261,7 +4190,14 @@ class App:
             return
         key = keys[0]
         old = self.map[key].copy()
-        dialog = BrowserDialog(self.root, "编辑浏览器", old, old["port"])
+        dialog = BrowserDialog(
+            self.root,
+            "编辑浏览器",
+            old,
+            old["port"],
+            browser_key=key,
+            vault=self.vault,
+        )
         self.root.wait_window(dialog)
         if not dialog.result:
             return
@@ -3271,6 +4207,7 @@ class App:
         dialog.result["created_at"] = old.get("created_at", "")
         dialog.result["last_open_at"] = old.get("last_open_at", "")
         self.map[key] = dialog.result
+        self.replace_browser_vault(key, dialog.vault_result or [])
         self.save_map()
         self.write_launcher(key, dialog.result)
         log(f"编辑浏览器：{dialog.result['name']}")
@@ -3408,7 +4345,7 @@ class App:
                 arguments.append(f"--proxy-server={bridge}")
             else:
                 arguments.append(f"--proxy-server={proxy['server']}")
-        arguments.append(url or record.get("home") or "about:blank")
+        arguments.append(resolve_start_url(record, url))
         subprocess.Popen(arguments, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         deadline = time.time() + 12
         while time.time() < deadline and not cdp_alive(record["port"]):
@@ -3466,8 +4403,18 @@ class App:
                     process.kill()
                 except Exception:
                     pass
-            stop_port_listener(30000 + int(record["port"]))
-            stop_port_listener(40000 + int(record["port"]))
+            proxy_config_path = proxy_bridge_config_path(self.profile_path(record))
+            stop_port_listener(
+                proxy_bridge_port(record["port"], proxy_config_path),
+                proxy_bridge_markers(proxy_config_path),
+            )
+            environment_config_path = (
+                self.profile_path(record) / "environment-controller.json"
+            )
+            stop_port_listener(
+                environment_controller_port(record["port"]),
+                environment_controller_markers(environment_config_path),
+            )
             log(f"关闭浏览器：{record['name']}")
         self.refresh()
 
@@ -4205,7 +5152,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
             record["port"] = port
             record["profile"] = profile
             record.setdefault("group", "导入")
-            record.setdefault("home", "about:blank")
+            record["home"] = normalize_home_value(record.get("home", ""))
             record.setdefault("proxy", "")
             record.setdefault("note", "")
             record.setdefault("schedule", "")
@@ -4347,7 +5294,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
             running += bool(is_cdp)
             searchable = " ".join((
                 record.get("name", ""), record.get("group", ""), str(record.get("port", "")),
-                record.get("home", ""), record.get("proxy", ""),
+                display_home_value(record.get("home", "")), record.get("proxy", ""),
             )).lower()
             if query and query not in searchable:
                 continue
@@ -4362,7 +5309,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
                     record["name"], record.get("group", ""), record["port"], status,
                     pid or "", tabs, f"{memory:.0f} MB" if memory else "",
                     format_open_time(record.get("last_open_at")),
-                    record.get("home", ""), record.get("proxy", ""), "",
+                    display_home_value(record.get("home", "")), record.get("proxy", ""), "",
                 ),
                 tags=("running" if is_cdp else "occupied" if is_open else "stopped",),
             )

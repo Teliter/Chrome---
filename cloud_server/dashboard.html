@@ -5,42 +5,53 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Chrome Manager 云端控制台</title>
   <style>
-    :root{--bg:#f7f5f1;--card:#fff;--text:#252321;--muted:#77716b;--line:#e7e1da;--brand:#cf775d;--danger:#b5453c;--green:#247c45}
+    :root{--bg:#f7f5f1;--card:#fff;--text:#252321;--muted:#77716b;--line:#e7e1da;--brand:#cf775d;--brand2:#a95f4a;--danger:#b5453c;--green:#247c45;--soft:#faf2ee}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:"Microsoft YaHei UI",system-ui,sans-serif}
-    header{padding:18px 4vw;background:#fff;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
-    h1{font-size:22px;margin:0}h2{font-size:18px;margin:0}.wrap{max-width:1500px;margin:24px auto;padding:0 20px}
-    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;box-shadow:0 8px 30px #6b55400d}
-    .login{max-width:480px;margin:70px auto}.field{display:grid;gap:7px;margin:15px 0}
-    input{padding:12px;border:1px solid var(--line);border-radius:9px;font-size:15px;width:100%}
+    header{padding:16px 4vw;background:#fff;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:16px;position:sticky;top:0;z-index:3}
+    h1{font-size:22px;margin:0}h2{font-size:18px;margin:0}h3{font-size:15px;margin:0 0 10px}.wrap{max-width:1500px;margin:22px auto;padding:0 20px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:20px;box-shadow:0 8px 30px #6b55400d}
+    .login{max-width:500px;margin:50px auto}.field{display:grid;gap:7px;margin:14px 0}
+    label{font-size:13px;color:var(--muted)}input{padding:12px;border:1px solid var(--line);border-radius:6px;font-size:15px;width:100%;background:#fff}
     input[type=checkbox]{width:auto}.check{display:flex;gap:8px;align-items:center}
-    button{border:0;border-radius:8px;padding:10px 15px;background:var(--brand);color:#fff;font-weight:700;cursor:pointer}
-    button:disabled{opacity:.5;cursor:not-allowed}.secondary{background:#eee8e1;color:#4b4540}.danger{background:var(--danger)}
-    .row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.row h2{flex:1}.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:18px}
-    .stat b{font-size:27px;display:block;margin-top:8px}.muted{color:var(--muted)}.error{color:#b33b2f;margin-top:12px}.hidden{display:none!important}
+    button{border:0;border-radius:6px;padding:10px 15px;background:var(--brand);color:#fff;font-weight:700;cursor:pointer}
+    button:hover{background:var(--brand2)}button:disabled{opacity:.5;cursor:not-allowed}.secondary{background:#eee8e1;color:#4b4540}.secondary:hover{background:#e2d9cf}.danger{background:var(--danger)}
+    .row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.row h2,.row h3{flex:1}.top-actions{justify-content:flex-end}
+    .stats{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:18px}.stat b{font-size:27px;display:block;margin-top:8px}
+    .muted{color:var(--muted)}.error{color:#b33b2f;margin-top:12px}.status{min-height:22px;color:var(--muted);margin:10px 0 0}.hidden{display:none!important}
     .layout{display:grid;grid-template-columns:minmax(430px,.8fr) minmax(620px,1.2fr);gap:18px}
     .table-wrap{overflow:auto;max-height:620px}table{width:100%;border-collapse:collapse;min-width:650px}
     th,td{text-align:left;padding:11px;border-bottom:1px solid var(--line);font-size:13px;white-space:nowrap}th{color:var(--muted);position:sticky;top:0;background:#fff;z-index:1}
-    tr.clickable{cursor:pointer}tr.clickable:hover{background:#faf2ee}.badge{padding:3px 8px;border-radius:10px;background:#e8f5ea;color:var(--green)}.badge.off{background:#f8e5e3;color:#a63d35}
+    tr.clickable{cursor:pointer}tr.clickable:hover{background:var(--soft)}.badge{padding:3px 8px;border-radius:999px;background:#e8f5ea;color:var(--green)}.badge.off{background:#f8e5e3;color:#a63d35}
     .section{margin-top:20px}.empty{padding:35px;text-align:center;color:var(--muted)}.toolbar{margin-bottom:14px}
-    .resource-grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}.resource-box{border:1px solid var(--line);border-radius:10px;padding:12px;max-height:310px;overflow:auto}
-    .resource-item{display:grid;grid-template-columns:auto 1fr;gap:8px;padding:8px 4px;border-bottom:1px solid #f1ece6}.resource-item small{display:block;color:var(--muted);margin-top:3px}
-    .notice{padding:12px 14px;border-radius:9px;background:#fff5e8;color:#7b4b1e;margin-bottom:15px}.good{background:#edf8ef;color:#256b39}
-    @media(max-width:1050px){.layout,.resource-grid{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
+    .resource-grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}.resource-box{border:1px solid var(--line);border-radius:8px;padding:12px;max-height:330px;overflow:auto;background:#fff}
+    .resource-tools{display:flex;gap:8px;margin:0 0 8px}.resource-item{display:grid;grid-template-columns:auto 1fr;gap:8px;padding:8px 4px;border-bottom:1px solid #f1ece6}.resource-item small{display:block;color:var(--muted);margin-top:3px;line-height:1.45}.resource-item.disabled{opacity:.48}
+    .notice{padding:12px 14px;border-radius:8px;background:#fff5e8;color:#7b4b1e;margin-bottom:15px}.good{background:#edf8ef;color:#256b39}.overview{margin-bottom:18px}
+    .tabs{display:flex;gap:8px;margin:14px 0}.tabs button{flex:1}.tabs .active{background:var(--brand);color:#fff}.tabs .inactive{background:#eee8e1;color:#4b4540}
+    @media(max-width:1050px){.layout,.resource-grid{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}header{align-items:flex-start;flex-direction:column}.top-actions{justify-content:flex-start}}
   </style>
 </head>
 <body>
 <header>
   <h1>Chrome Manager 云端控制台</h1>
-  <div class="row"><span id="account" class="muted"></span><button id="logoutBtn" class="secondary hidden" onclick="logout()">退出</button></div>
+  <div class="row top-actions">
+    <span id="account" class="muted"></span>
+    <button id="refreshBtn" class="secondary hidden" onclick="route()">刷新</button>
+    <button id="logoutBtn" class="secondary hidden" onclick="logout()">退出</button>
+  </div>
 </header>
 <main class="wrap">
   <section id="loginCard" class="card login">
-    <h2>登录控制台</h2>
+    <h2 id="authTitle">登录控制台</h2>
     <p class="muted">主账号可管理子账号与授权；子账号只能查看分配给自己的浏览器和网站账号。</p>
+    <div class="tabs">
+      <button id="loginTab" class="active" onclick="setAuthMode('login')">登录</button>
+      <button id="registerTab" class="inactive" onclick="setAuthMode('register')">注册主账号</button>
+    </div>
     <div class="field"><label>用户名</label><input id="username" autocomplete="username"></div>
     <div class="field"><label>密码</label><input id="password" type="password" autocomplete="current-password"></div>
-    <button onclick="login()">登录</button>
+    <button id="authSubmit" onclick="submitAuth()">登录</button>
     <div id="loginError" class="error"></div>
+    <div id="authStatus" class="status"></div>
   </section>
 
   <section id="adminView" class="hidden">
@@ -75,14 +86,18 @@
   </section>
 
   <section id="ownerView" class="hidden">
-    <div class="notice good">主账号可以创建子账号并分配资源。子账号在客户端和网页端均为只读，不能上传、编辑或删除配置。</div>
+    <div class="notice good">主账号可以创建子账号并分配资源。先在软件内上传同步，再在这里给子账号分配浏览器和网站账号。</div>
+    <div class="card overview">
+      <div class="row toolbar"><h2>云端资源</h2><button class="secondary" onclick="loadOwner()">刷新资源</button></div>
+      <div id="ownerResourcesOverview"></div>
+    </div>
     <div class="layout">
       <div class="card">
         <div class="row toolbar"><h2>子账号</h2><button onclick="showCreateMember()">新建子账号</button><button class="secondary" onclick="loadOwner()">刷新</button></div>
         <div id="createMemberBox" class="hidden">
-          <div class="field"><label>用户名</label><input id="newMemberUsername"></div>
-          <div class="field"><label>显示名称</label><input id="newMemberDisplay"></div>
-          <div class="field"><label>初始密码（至少 8 位）</label><input id="newMemberPassword" type="password"></div>
+          <div class="field"><label>用户名</label><input id="newMemberUsername" autocomplete="off"></div>
+          <div class="field"><label>显示名称</label><input id="newMemberDisplay" autocomplete="off"></div>
+          <div class="field"><label>初始密码</label><input id="newMemberPassword" type="password" autocomplete="new-password"></div>
           <div class="row"><button onclick="createMember()">确定创建</button><button class="secondary" onclick="showCreateMember(false)">取消</button></div>
           <p id="memberError" class="error"></p>
         </div>
@@ -97,8 +112,14 @@
           <div class="row"><h2 id="memberTitle"></h2><button onclick="saveAssignments()">保存授权</button><button id="memberToggle" class="secondary" onclick="toggleMember()"></button><button class="secondary" onclick="resetMemberPassword()">重置密码</button><button class="danger" onclick="deleteMember()">删除</button></div>
           <p id="memberMeta" class="muted"></p>
           <div class="resource-grid">
-            <div><h2 class="section">可用浏览器</h2><div id="browserAssignments" class="resource-box"></div></div>
-            <div><h2 class="section">可用网站账号</h2><div id="vaultAssignments" class="resource-box"></div></div>
+            <div>
+              <div class="row section"><h3>可用浏览器</h3><button class="secondary" onclick="setChecks('browserAssign',true)">全选</button><button class="secondary" onclick="setChecks('browserAssign',false)">清空</button></div>
+              <div id="browserAssignments" class="resource-box"></div>
+            </div>
+            <div>
+              <div class="row section"><h3>可用网站账号</h3><button class="secondary" onclick="setChecks('vaultAssign',true)">全选</button><button class="secondary" onclick="setChecks('vaultAssign',false)">清空</button></div>
+              <div id="vaultAssignments" class="resource-box"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -106,87 +127,159 @@
   </section>
 
   <section id="memberView" class="hidden">
-    <div class="notice">这是只读子账号。你可以查看和启动分配给自己的浏览器，但不能修改浏览器配置或网站账号。</div>
+    <div class="notice">这是只读子账号。你可以查看分配给自己的浏览器和网站账号，不能修改或上传配置。</div>
     <div class="card"><div class="row toolbar"><h2>我的授权资源</h2><button class="secondary" onclick="loadMember()">刷新</button></div><div id="memberResources"></div></div>
   </section>
+  <div id="pageStatus" class="status"></div>
 </main>
 <script>
-let token=sessionStorage.getItem("portalToken")||"",role=sessionStorage.getItem("portalRole")||"";
+let token=sessionStorage.getItem("portalToken")||"",role=sessionStorage.getItem("portalRole")||"",authMode="login";
 let selectedAdmin=null,selectedMember=null,ownerResources={browsers:[],vault:[]};
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const date=v=>v?new Date(v).toLocaleString():"从未";
+const status=text=>{pageStatus.textContent=text||""};
+function setBusy(text){status(text);document.querySelectorAll("button").forEach(x=>x.disabled=true)}
+function clearBusy(text){document.querySelectorAll("button").forEach(x=>x.disabled=false);status(text||"")}
 async function api(path,options={}){
   options.headers={...(options.headers||{}),"Content-Type":"application/json",Authorization:`Bearer ${token}`};
-  const response=await fetch(path,options),data=await response.json();
-  if(!response.ok)throw new Error(data.detail||`HTTP ${response.status}`);return data;
+  const response=await fetch(path,options),data=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(formatError(data.detail||`HTTP ${response.status}`));return data;
+}
+function formatError(detail){
+  if(Array.isArray(detail)){
+    return detail.map(formatValidationItem).join("；");
+  }
+  if(detail&&typeof detail==="object"){
+    return detail.msg||detail.message||JSON.stringify(detail);
+  }
+  return String(detail||"操作失败");
+}
+function formatValidationItem(item){
+  const msg=String(item?.msg||item?.message||"字段格式不正确");
+  const loc=Array.isArray(item?.loc)?item.loc.join("."):"";
+  const field=loc.includes("username")?"用户名":loc.includes("password")?"密码":loc.includes("display_name")?"显示名称":"字段";
+  if(msg.includes("at least 3"))return `${field}至少需要 3 个字符。`;
+  if(msg.includes("at most 32"))return `${field}最多 32 个字符。`;
+  if(msg.includes("at most 64"))return `${field}最多 64 个字符。`;
+  if(msg.includes("at most 128"))return `${field}最多 128 个字符。`;
+  return msg;
 }
 function hideViews(){["loginCard","adminView","ownerView","memberView"].forEach(id=>document.getElementById(id).classList.add("hidden"))}
-async function login(){
-  try{
-    const response=await fetch("/api/portal/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:username.value,password:password.value})});
-    const data=await response.json();if(!response.ok)throw new Error(data.detail);
-    token=data.token;role=data.role;sessionStorage.setItem("portalToken",token);sessionStorage.setItem("portalRole",role);
-    account.textContent=`${data.display_name||data.username} · ${role==="admin"?"系统管理员":role==="owner"?"主账号":"只读子账号"}`;
-    logoutBtn.classList.remove("hidden");loginError.textContent="";await route();
-  }catch(error){loginError.textContent=error.message}
+function setAuthMode(mode){
+  authMode=mode;loginError.textContent="";authStatus.textContent="";
+  const isRegister=mode==="register";
+  authTitle.textContent=isRegister?"注册主账号":"登录控制台";
+  authSubmit.textContent=isRegister?"注册并登录":"登录";
+  loginTab.className=isRegister?"inactive":"active";
+  registerTab.className=isRegister?"active":"inactive";
+  password.autocomplete=isRegister?"new-password":"current-password";
 }
+async function submitAuth(){
+  const path=authMode==="register"?"/api/portal/register":"/api/portal/login";
+  try{
+    loginError.textContent="";authStatus.textContent=authMode==="register"?"正在注册...":"正在登录...";
+    const response=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:username.value,password:password.value})});
+    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(formatError(data.detail||`HTTP ${response.status}`));
+    token=data.token;role=data.role;sessionStorage.setItem("portalToken",token);sessionStorage.setItem("portalRole",role);
+    account.textContent=`${data.display_name||data.username} · ${roleText(role)}`;
+    logoutBtn.classList.remove("hidden");refreshBtn.classList.remove("hidden");password.value="";authStatus.textContent="";await route();
+  }catch(error){loginError.textContent=error.message;authStatus.textContent=""}
+}
+function roleText(value){return value==="admin"?"系统管理员":value==="owner"?"主账号":"只读子账号"}
 async function logout(){
   try{if(token)await api("/api/logout",{method:"POST"})}catch(_){}
   token="";role="";sessionStorage.removeItem("portalToken");sessionStorage.removeItem("portalRole");
-  hideViews();loginCard.classList.remove("hidden");logoutBtn.classList.add("hidden");account.textContent="";
+  hideViews();loginCard.classList.remove("hidden");logoutBtn.classList.add("hidden");refreshBtn.classList.add("hidden");account.textContent="";status("");
 }
 async function route(){
   try{
+    setBusy("正在刷新账号状态...");
     const me=await api("/api/me");role=me.role;sessionStorage.setItem("portalRole",role);
-    account.textContent=`${me.display_name||me.username} · ${role==="admin"?"系统管理员":role==="owner"?"主账号":"只读子账号"}`;
-    hideViews();logoutBtn.classList.remove("hidden");
-    if(role==="admin"){adminView.classList.remove("hidden");await loadAdmin()}
-    else if(role==="owner"){ownerView.classList.remove("hidden");await loadOwner()}
-    else{memberView.classList.remove("hidden");await loadMember()}
-  }catch(error){logout();loginError.textContent=error.message}
+    account.textContent=`${me.display_name||me.username} · ${roleText(role)} · 浏览器 ${me.browser_count} · 网站账号 ${me.vault_count}`;
+    hideViews();logoutBtn.classList.remove("hidden");refreshBtn.classList.remove("hidden");
+    if(role==="admin"){adminView.classList.remove("hidden");await loadAdmin(false)}
+    else if(role==="owner"){ownerView.classList.remove("hidden");await loadOwner(false)}
+    else{memberView.classList.remove("hidden");await loadMember(false)}
+    clearBusy(`已刷新：${date(me.updated_at)}`);
+  }catch(error){clearBusy();await logout();loginError.textContent=error.message}
 }
 function resourceTables(data){
-  const browserRows=Object.entries(data.browsers||{}).map(([key,x])=>`<tr><td>${esc(x.name||key)}</td><td>${esc(x.group)}</td><td>${esc(x.port)}</td><td>${esc(x.home)}</td><td>${esc(x.last_open_at)}</td></tr>`).join("");
+  const browserList=Array.isArray(data.browsers)
+    ? data.browsers
+    : Object.entries(data.browsers||{}).map(([key,x])=>({key,...x}));
+  const browserRows=browserList.map(x=>`<tr><td>${esc(x.name||x.key)}</td><td>${esc(x.group)}</td><td>${esc(x.port)}</td><td>${esc(x.home||"软件欢迎页")}</td><td>${esc(x.last_open_at)}</td></tr>`).join("");
   const vaultRows=(data.vault||[]).map(x=>`<tr><td>${esc(x.site)}</td><td>${esc(x.url)}</td><td>${esc(x.username)}</td><td>${esc(x.password)}</td><td>${esc(x.note)}</td></tr>`).join("");
-  return `<h2 class="section">浏览器</h2><div class="table-wrap" style="max-height:280px"><table><thead><tr><th>名称</th><th>分组</th><th>端口</th><th>首页</th><th>上次打开</th></tr></thead><tbody>${browserRows}</tbody></table></div><h2 class="section">网站账号</h2><div class="table-wrap" style="max-height:300px"><table><thead><tr><th>网站</th><th>网址</th><th>账号</th><th>密码</th><th>备注</th></tr></thead><tbody>${vaultRows}</tbody></table></div>`;
+  return `<h2 class="section">浏览器</h2><div class="table-wrap" style="max-height:280px"><table><thead><tr><th>名称</th><th>分组</th><th>端口</th><th>首页</th><th>上次打开</th></tr></thead><tbody>${browserRows||'<tr><td colspan="5">暂无浏览器</td></tr>'}</tbody></table></div><h2 class="section">网站账号</h2><div class="table-wrap" style="max-height:300px"><table><thead><tr><th>网站</th><th>网址</th><th>账号</th><th>密码</th><th>备注</th></tr></thead><tbody>${vaultRows||'<tr><td colspan="5">暂无网站账号</td></tr>'}</tbody></table></div>`;
 }
-async function loadAdmin(){
+async function loadAdmin(show=true){
+  if(show)setBusy("正在刷新用户列表...");
   const [summary,list]=await Promise.all([api("/api/admin/summary"),api("/api/admin/users")]);
   ownerCount.textContent=summary.owner_count;adminMemberCount.textContent=summary.member_count;disabledCount.textContent=summary.disabled_count;browserCount.textContent=summary.browser_count;vaultCount.textContent=summary.vault_count;
-  adminUsers.innerHTML=list.users.map(x=>`<tr class="clickable" onclick="showAdminUser(${x.id})"><td>${esc(x.username)}</td><td>${x.role==="owner"?"主账号":"子账号"}</td><td>${esc(x.owner_username||"-")}</td><td><span class="badge ${x.disabled?"off":""}">${x.disabled?"已禁用":"正常"}</span></td><td>${x.browser_count}</td><td>${x.vault_count}</td></tr>`).join("");
+  adminUsers.innerHTML=list.users.map(x=>`<tr class="clickable" onclick="showAdminUser(${x.id})"><td>${esc(x.username)}</td><td>${x.role==="owner"?"主账号":"子账号"}</td><td>${esc(x.owner_username||"-")}</td><td><span class="badge ${x.disabled?"off":""}">${x.disabled?"已禁用":"正常"}</span></td><td>${x.browser_count}</td><td>${x.vault_count}</td></tr>`).join("")||'<tr><td colspan="6">暂无用户</td></tr>';
+  if(show)clearBusy("用户列表已刷新");
 }
 async function showAdminUser(id){
+  setBusy("正在读取用户详情...");
   const data=await api(`/api/admin/users/${id}`);selectedAdmin=data.user;adminEmpty.classList.add("hidden");adminDetail.classList.remove("hidden");
   adminDetailTitle.textContent=data.user.username;adminToggle.textContent=data.user.disabled?"启用账号":"禁用账号";
   adminMeta.textContent=`类型：${data.user.role==="owner"?"主账号":"子账号"}　注册：${date(data.user.created_at)}　最近同步：${date(data.updated_at)}`;
-  adminResources.innerHTML=resourceTables(data);
+  adminResources.innerHTML=resourceTables(data);clearBusy("用户详情已刷新");
 }
-async function adminToggleUser(){if(!selectedAdmin)return;await api(`/api/admin/users/${selectedAdmin.id}/toggle-disabled`,{method:"POST"});await loadAdmin();await showAdminUser(selectedAdmin.id)}
-async function adminResetPassword(){if(!selectedAdmin)return;const value=prompt("请输入新密码（至少 8 位）");if(value===null)return;if(value.length<8)return alert("密码至少 8 位");await api(`/api/admin/users/${selectedAdmin.id}/password`,{method:"PUT",body:JSON.stringify({password:value})});alert("密码已重置，原登录会话已退出。")}
-async function adminDeleteUser(){if(!selectedAdmin||!confirm(`确定删除 ${selectedAdmin.username}？主账号的子账号也会一并删除。`))return;await api(`/api/admin/users/${selectedAdmin.id}`,{method:"DELETE"});selectedAdmin=null;adminDetail.classList.add("hidden");adminEmpty.classList.remove("hidden");await loadAdmin()}
-function showCreateMember(show=true){createMemberBox.classList.toggle("hidden",!show);if(show)newMemberUsername.focus()}
+async function adminToggleUser(){if(!selectedAdmin)return;setBusy("正在更新账号状态...");await api(`/api/admin/users/${selectedAdmin.id}/toggle-disabled`,{method:"POST"});await loadAdmin(false);await showAdminUser(selectedAdmin.id)}
+async function adminResetPassword(){if(!selectedAdmin)return;const value=prompt("请输入新密码");if(value===null)return;await api(`/api/admin/users/${selectedAdmin.id}/password`,{method:"PUT",body:JSON.stringify({password:value})});alert("密码已重置，原登录会话已退出。")}
+async function adminDeleteUser(){if(!selectedAdmin||!confirm(`确定删除 ${selectedAdmin.username}？主账号的子账号也会一并删除。`))return;setBusy("正在删除用户...");await api(`/api/admin/users/${selectedAdmin.id}`,{method:"DELETE"});selectedAdmin=null;adminDetail.classList.add("hidden");adminEmpty.classList.remove("hidden");await loadAdmin(false);clearBusy("用户已删除")}
+function showCreateMember(show=true){createMemberBox.classList.toggle("hidden",!show);memberError.textContent="";if(show)newMemberUsername.focus()}
 async function createMember(){
-  try{await api("/api/organization/members",{method:"POST",body:JSON.stringify({username:newMemberUsername.value,password:newMemberPassword.value,display_name:newMemberDisplay.value})});newMemberUsername.value="";newMemberPassword.value="";newMemberDisplay.value="";memberError.textContent="";showCreateMember(false);await loadOwner()}
-  catch(error){memberError.textContent=error.message}
+  try{setBusy("正在创建子账号...");await api("/api/organization/members",{method:"POST",body:JSON.stringify({username:newMemberUsername.value,password:newMemberPassword.value,display_name:newMemberDisplay.value})});newMemberUsername.value="";newMemberPassword.value="";newMemberDisplay.value="";showCreateMember(false);await loadOwner(false);clearBusy("子账号已创建")}
+  catch(error){clearBusy();memberError.textContent=error.message}
 }
-async function loadOwner(){
+async function loadOwner(show=true){
+  if(show)setBusy("正在刷新子账号和资源...");
   const [list,resources]=await Promise.all([api("/api/organization/members"),api("/api/organization/resources")]);ownerResources=resources;
-  members.innerHTML=list.members.map(x=>`<tr class="clickable" onclick="showMember(${x.id})"><td>${esc(x.username)}</td><td>${esc(x.display_name)}</td><td><span class="badge ${x.disabled?"off":""}">${x.disabled?"已禁用":"正常"}</span></td><td>${x.browser_count}</td><td>${x.vault_count}</td></tr>`).join("");
+  ownerResourcesOverview.innerHTML=resourceTables(resources);
+  members.innerHTML=list.members.map(x=>`<tr class="clickable" onclick="showMember(${x.id})"><td>${esc(x.username)}</td><td>${esc(x.display_name)}</td><td><span class="badge ${x.disabled?"off":""}">${x.disabled?"已禁用":"正常"}</span></td><td>${x.browser_count}</td><td>${x.vault_count}</td></tr>`).join("")||'<tr><td colspan="5">暂无子账号</td></tr>';
+  if(show)clearBusy(`已刷新：可分配 ${resources.browsers.length} 个浏览器，${resources.vault.length} 条网站账号`);
 }
 async function showMember(id){
+  setBusy("正在读取子账号授权...");
   const data=await api(`/api/organization/members/${id}`);selectedMember=data;memberEmpty.classList.add("hidden");memberDetail.classList.remove("hidden");
   memberTitle.textContent=data.member.display_name||data.member.username;memberMeta.textContent=`登录名：${data.member.username}　创建：${date(data.member.created_at)}`;
   memberToggle.textContent=data.member.disabled?"启用账号":"禁用账号";
-  browserAssignments.innerHTML=ownerResources.browsers.length?ownerResources.browsers.map(x=>`<label class="resource-item"><input type="checkbox" name="browserAssign" value="${esc(x.key)}" ${data.browser_keys.includes(x.key)?"checked":""}><span><b>${esc(x.name)}</b><small>${esc(x.group)} · CDP ${esc(x.port)}</small></span></label>`).join(""):'<div class="empty">主账号尚未上传浏览器</div>';
-  vaultAssignments.innerHTML=ownerResources.vault.length?ownerResources.vault.map(x=>`<label class="resource-item"><input type="checkbox" name="vaultAssign" value="${esc(x.key)}" ${data.vault_keys.includes(x.key)?"checked":""}><span><b>${esc(x.site||x.url)}</b><small>${esc(x.username)} · ${esc(x.browser_key||"未指定浏览器")}</small></span></label>`).join(""):'<div class="empty">主账号尚未上传网站账号</div>';
+  browserAssignments.innerHTML=ownerResources.browsers.length?ownerResources.browsers.map(x=>`<label class="resource-item"><input type="checkbox" name="browserAssign" value="${esc(x.key)}" onchange="syncVaultAvailability()" ${data.browser_keys.includes(x.key)?"checked":""}><span><b>${esc(x.name)}</b><small>${esc(x.group||"默认分组")} · CDP ${esc(x.port)} · ${esc(x.home||"软件欢迎页")}</small></span></label>`).join(""):'<div class="empty">主账号尚未上传浏览器</div>';
+  vaultAssignments.innerHTML=ownerResources.vault.length?ownerResources.vault.map(x=>`<label class="resource-item"><input type="checkbox" name="vaultAssign" value="${esc(x.key)}" data-browser-key="${esc(x.browser_key||"")}" ${data.vault_keys.includes(x.key)?"checked":""}><span><b>${esc(x.site||x.url)}</b><small>${esc(x.username)} · ${esc(x.browser_key||"未指定浏览器")}</small></span></label>`).join(""):'<div class="empty">主账号尚未上传网站账号</div>';
+  syncVaultAvailability();
+  clearBusy("子账号授权已刷新");
 }
-async function saveAssignments(){if(!selectedMember)return;const browser_keys=[...document.querySelectorAll('[name=browserAssign]:checked')].map(x=>x.value),vault_keys=[...document.querySelectorAll('[name=vaultAssign]:checked')].map(x=>x.value);await api(`/api/organization/members/${selectedMember.member.id}/assignments`,{method:"PUT",body:JSON.stringify({browser_keys,vault_keys})});alert("授权已保存");await loadOwner();await showMember(selectedMember.member.id)}
-async function toggleMember(){if(!selectedMember)return;await api(`/api/organization/members/${selectedMember.member.id}`,{method:"PUT",body:JSON.stringify({display_name:selectedMember.member.display_name,disabled:!selectedMember.member.disabled})});await loadOwner();await showMember(selectedMember.member.id)}
-async function resetMemberPassword(){if(!selectedMember)return;const value=prompt("请输入子账号新密码（至少 8 位）");if(value===null)return;if(value.length<8)return alert("密码至少 8 位");await api(`/api/organization/members/${selectedMember.member.id}/password`,{method:"PUT",body:JSON.stringify({password:value})});alert("密码已重置")}
-async function deleteMember(){if(!selectedMember||!confirm(`确定删除子账号 ${selectedMember.member.username}？`))return;await api(`/api/organization/members/${selectedMember.member.id}`,{method:"DELETE"});selectedMember=null;memberDetail.classList.add("hidden");memberEmpty.classList.remove("hidden");await loadOwner()}
-async function loadMember(){const data=await api("/api/sync");memberResources.innerHTML=resourceTables(data)}
+function selectedBrowserKeys(){return new Set([...document.querySelectorAll('[name=browserAssign]:checked')].map(x=>x.value))}
+function syncVaultAvailability(){
+  const browsers=selectedBrowserKeys();
+  document.querySelectorAll('[name=vaultAssign]').forEach(input=>{
+    const browserKey=input.dataset.browserKey||"";
+    const allowed=!browserKey||browsers.has(browserKey);
+    input.disabled=!allowed;
+    if(!allowed)input.checked=false;
+    input.closest(".resource-item")?.classList.toggle("disabled",!allowed);
+    const small=input.closest(".resource-item")?.querySelector("small");
+    if(small){
+      const base=small.dataset.baseText||small.textContent;
+      small.dataset.baseText=base;
+      small.textContent=allowed?base:`${base} · 请先勾选所属浏览器`;
+    }
+  });
+}
+function setChecks(name,value){
+  document.querySelectorAll(`[name=${name}]`).forEach(x=>{if(!x.disabled)x.checked=value});
+  if(name==="browserAssign")syncVaultAvailability();
+}
+async function saveAssignments(){if(!selectedMember)return;setBusy("正在保存授权...");const browser_keys=[...document.querySelectorAll('[name=browserAssign]:checked')].map(x=>x.value),vault_keys=[...document.querySelectorAll('[name=vaultAssign]:checked')].map(x=>x.value);await api(`/api/organization/members/${selectedMember.member.id}/assignments`,{method:"PUT",body:JSON.stringify({browser_keys,vault_keys})});await loadOwner(false);await showMember(selectedMember.member.id);clearBusy("授权已保存")}
+async function toggleMember(){if(!selectedMember)return;setBusy("正在更新子账号状态...");await api(`/api/organization/members/${selectedMember.member.id}`,{method:"PUT",body:JSON.stringify({display_name:selectedMember.member.display_name,disabled:!selectedMember.member.disabled})});await loadOwner(false);await showMember(selectedMember.member.id)}
+async function resetMemberPassword(){if(!selectedMember)return;const value=prompt("请输入子账号新密码");if(value===null)return;await api(`/api/organization/members/${selectedMember.member.id}/password`,{method:"PUT",body:JSON.stringify({password:value})});alert("密码已重置，子账号需重新登录")}
+async function deleteMember(){if(!selectedMember||!confirm(`确定删除子账号 ${selectedMember.member.username}？`))return;setBusy("正在删除子账号...");await api(`/api/organization/members/${selectedMember.member.id}`,{method:"DELETE"});selectedMember=null;memberDetail.classList.add("hidden");memberEmpty.classList.remove("hidden");await loadOwner(false);clearBusy("子账号已删除")}
+async function loadMember(show=true){if(show)setBusy("正在刷新授权资源...");const data=await api("/api/sync");memberResources.innerHTML=resourceTables(data);if(show)clearBusy("授权资源已刷新")}
 if(token)route();
-window.addEventListener("unhandledrejection",event=>{event.preventDefault();alert(event.reason?.message||"操作失败，请刷新后重试。")});
+window.addEventListener("unhandledrejection",event=>{event.preventDefault();clearBusy();alert(event.reason?.message||"操作失败，请刷新后重试。")});
+username.addEventListener("keydown",event=>{if(event.key==="Enter")password.focus()});
+password.addEventListener("keydown",event=>{if(event.key==="Enter")submitAuth()});
 </script>
 </body>
 </html>
