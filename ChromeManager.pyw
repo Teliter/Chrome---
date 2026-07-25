@@ -56,7 +56,7 @@ except ImportError:
     ImageTk = None
 
 
-APP_VERSION = "3.3.2"
+APP_VERSION = "3.3.3"
 UPDATE_REPOSITORY = "Teliter/Chrome---"
 UPDATE_API_URL = (
     f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest"
@@ -300,6 +300,24 @@ def default_start_url():
 def resolve_start_url(record, url=None):
     home = normalize_home_value(record.get("home", ""))
     return normalize_home_value(url) or home or default_start_url()
+
+
+def reorder_mapping_key(mapping, source_key, target_key, after=False):
+    """Move one dictionary entry while preserving the displayed list order."""
+    keys = list(mapping)
+    if (
+        source_key not in mapping
+        or target_key not in mapping
+        or source_key == target_key
+    ):
+        return False
+    records = dict(mapping)
+    keys.remove(source_key)
+    target_index = keys.index(target_key)
+    keys.insert(target_index + int(after), source_key)
+    mapping.clear()
+    mapping.update((key, records[key]) for key in keys)
+    return True
 
 
 def configure_dialog_parent(root):
@@ -2518,6 +2536,18 @@ class App:
             SETTINGS_FILE,
             {"quick_urls": [], "minimize_to_tray": True, "password_hash": ""},
         )
+        if not self.settings.get("password_save_prompt_migrated"):
+            migrated = False
+            for record in self.map.values():
+                environment = record.get("environment", {})
+                if environment.get("disable_password_prompt"):
+                    environment["disable_password_prompt"] = False
+                    migrated = True
+            if migrated:
+                save_json(MAP_FILE, self.map)
+                self.map_mtime = MAP_FILE.stat().st_mtime_ns
+            self.settings["password_save_prompt_migrated"] = True
+            save_json(SETTINGS_FILE, self.settings)
         self.vault = load_vault()
         self.last_schedule_minute = ""
         self.tray = None
@@ -2820,7 +2850,7 @@ class App:
         ttk.Button(toolbar, text="更多操作", command=self.more_menu).pack(side="left")
         ttk.Label(
             toolbar,
-            text="列表支持 Ctrl / Shift 多选",
+            text="拖动浏览器名称可调整排序；列表支持 Ctrl / Shift 多选",
             style="Muted.TLabel",
         ).pack(side="left", padx=(12, 0))
         ttk.Button(toolbar, text="全部启动", command=self.start_all).pack(side="right")
@@ -2872,11 +2902,96 @@ class App:
         table.rowconfigure(0, weight=1)
         table.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", self.on_tree_double_click)
+        self.tree.bind("<ButtonPress-1>", self.on_tree_drag_start)
+        self.tree.bind("<B1-Motion>", self.on_tree_drag_motion)
+        self.tree.bind("<ButtonRelease-1>", self.on_tree_drag_release)
         self.tree.bind("<Configure>", self.on_tree_configure)
         self.tree.bind("<MouseWheel>", lambda _: self.root.after_idle(self.position_action_buttons))
         self.tree.tag_configure("running", foreground=GREEN)
         self.tree.tag_configure("occupied", foreground=RED)
         self.action_buttons = {}
+        self.drag_indicator = tk.Frame(table, bg=BLUE, height=3)
+        self._drag_browser_key = ""
+        self._drag_start_y = 0
+        self._drag_active = False
+        self._drag_target_key = ""
+        self._drag_after = False
+
+    def can_drag_browser_rows(self):
+        return (
+            not self.search_var.get().strip()
+            and self.group_filter_var.get() == "全部分组"
+            and self.status_filter_var.get() == "全部状态"
+        )
+
+    def on_tree_drag_start(self, event):
+        self._drag_browser_key = ""
+        self._drag_active = False
+        self._drag_target_key = ""
+        self.hide_drag_indicator()
+        if event.state & 0x0005 or not self.can_drag_browser_rows():
+            return
+        if (
+            self.tree.identify_region(event.x, event.y) != "cell"
+            or self.tree.identify_column(event.x) != "#1"
+        ):
+            return
+        row = self.tree.identify_row(event.y)
+        if row in self.map:
+            self._drag_browser_key = row
+            self._drag_start_y = event.y
+
+    def on_tree_drag_motion(self, event):
+        if not self._drag_browser_key:
+            return
+        if abs(event.y - self._drag_start_y) >= 6:
+            self._drag_active = True
+            self.tree.configure(cursor="fleur")
+        if not self._drag_active:
+            return
+        target_key = self.tree.identify_row(event.y)
+        if target_key not in self.map or target_key == self._drag_browser_key:
+            self._drag_target_key = ""
+            self.hide_drag_indicator()
+            return
+        box = self.tree.bbox(target_key)
+        if not box:
+            self._drag_target_key = ""
+            self.hide_drag_indicator()
+            return
+        self._drag_target_key = target_key
+        self._drag_after = event.y > box[1] + box[3] // 2
+        line_y = box[1] + (box[3] if self._drag_after else 0) - 1
+        self.drag_indicator.place(
+            x=self.tree.winfo_x() + 4,
+            y=self.tree.winfo_y() + line_y,
+            width=max(1, self.tree.winfo_width() - 8),
+            height=3,
+        )
+
+    def hide_drag_indicator(self):
+        if hasattr(self, "drag_indicator"):
+            self.drag_indicator.place_forget()
+
+    def on_tree_drag_release(self, event):
+        source_key = self._drag_browser_key
+        was_dragging = self._drag_active
+        target_key = self._drag_target_key
+        after = self._drag_after
+        self._drag_browser_key = ""
+        self._drag_active = False
+        self._drag_target_key = ""
+        self._drag_after = False
+        self.tree.configure(cursor="")
+        self.hide_drag_indicator()
+        if not source_key or not was_dragging or not self.can_drag_browser_rows():
+            return
+        if target_key not in self.map or target_key == source_key:
+            return
+        if reorder_mapping_key(self.map, source_key, target_key, after):
+            self.save_map()
+            self.refresh()
+            self.tree.selection_set(source_key)
 
     def on_tree_configure(self, _event=None):
         pending = getattr(self, "tree_resize_job", None)
@@ -5263,6 +5378,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
     def refresh(self):
         if not hasattr(self, "tree"):
             return
+        self.hide_drag_indicator()
         self.reload_external_map()
         groups = sorted({record.get("group", "").strip() for record in self.map.values()
                          if record.get("group", "").strip()})
@@ -5281,7 +5397,7 @@ if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
         self.tree.delete(*self.tree.get_children())
         running = 0
         visible = 0
-        for key, record in sorted(self.map.items(), key=lambda item: int(item[1]["port"])):
+        for key, record in self.map.items():
             pid = listeners.get(int(record["port"]))
             is_open = bool(pid) or port_open(record["port"])
             is_cdp = cdp_alive(record["port"]) if is_open else False
@@ -5450,6 +5566,11 @@ def self_test():
         for argument in follow_arguments
     )
     assert consistency_report(environment)["warnings"]
+    order = {"browser1": {"name": "A"}, "browser2": {"name": "B"}, "browser3": {"name": "C"}}
+    assert reorder_mapping_key(order, "browser1", "browser3", after=True)
+    assert list(order) == ["browser2", "browser3", "browser1"]
+    assert reorder_mapping_key(order, "browser1", "browser2")
+    assert list(order) == ["browser1", "browser2", "browser3"]
     test_root = ROOT / ".selftest"
     shutil.rmtree(test_root, ignore_errors=True)
     test_root.mkdir()

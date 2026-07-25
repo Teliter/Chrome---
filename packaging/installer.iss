@@ -1,5 +1,5 @@
 #define MyAppName "Chrome 多开管理器"
-#define MyAppVersion "3.3.2"
+#define MyAppVersion "3.3.3"
 #define MyAppPublisher "Chrome Manager"
 #define MyAppExeName "ChromeManager.exe"
 
@@ -13,7 +13,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\release
-OutputBaseFilename=ChromeMultiManager-Setup-3.3.2
+OutputBaseFilename=ChromeMultiManager-Setup-3.3.3
 SetupIconFile=..\chrome-manager.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2

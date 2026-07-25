@@ -35,7 +35,7 @@ DEFAULT_ENVIRONMENT = {
     "mobile_mode": False,
     "touch_mode": False,
     "device_scale_factor": 1.0,
-    "disable_password_prompt": True,
+    "disable_password_prompt": False,
     "disable_translate": True,
     "incognito": False,
     "extension_paths": [],
@@ -110,9 +110,10 @@ def apply_profile_preferences(profile, environment):
             "default_directory"
         ] = str(Path(env["download_dir"]).expanduser())
         preferences["download"]["prompt_for_download"] = False
-    if env["disable_password_prompt"]:
-        preferences["credentials_enable_service"] = False
-        preferences.setdefault("profile", {})["password_manager_enabled"] = False
+    preferences["credentials_enable_service"] = not env["disable_password_prompt"]
+    preferences.setdefault("profile", {})["password_manager_enabled"] = (
+        not env["disable_password_prompt"]
+    )
     _write_json(preferences_path, preferences)
 
 
